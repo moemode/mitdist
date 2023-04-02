@@ -1,0 +1,5 @@
+
+Partition input data into M splits
+
+Reduce invocations are distributed by partitioning the im key space into
+R pieces using hashing.
