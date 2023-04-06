@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ type Coordinator struct {
 	*/
 	files   []string
 	nReduce int
+	done    bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -40,7 +42,14 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) GetMapTask(_ *struct{}, r *MapTaskReply) error {
 	if len(c.files) > 0 {
 		r.Filename = c.files[0]
+		r.TaskId = 0
+		r.NReduce = c.nReduce
 	}
+	return nil
+}
+
+func (c *Coordinator) TaskCompleted(TaskId int, _ *struct{}) error {
+	c.done = true
 	return nil
 }
 
@@ -61,9 +70,10 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-	// Your code here.
-	return ret
+	if c.done {
+		fmt.Println("Coordinator is done.")
+	}
+	return c.done
 }
 
 // create a Coordinator.
@@ -72,7 +82,7 @@ func (c *Coordinator) Done() bool {
 // and is the input to one Map task.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{files, nReduce}
+	c := Coordinator{files, nReduce, false}
 	// Your code here.
 	c.server()
 	return &c

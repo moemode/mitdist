@@ -25,7 +25,8 @@ type ExampleReply struct {
 }
 
 type MapTaskReply struct {
-	Filename string
+	Filename        string
+	NReduce, TaskId int
 }
 
 // Add your RPC definitions here.

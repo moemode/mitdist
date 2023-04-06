@@ -28,11 +28,12 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	ok, maptask := CallGetMapTask()
 	if ok {
-		mapFile(mapf, maptask.Filename)
+		mapFile(mapf, maptask)
 	}
 }
 
-func mapFile(mapf func(string, string) []KeyValue, filename string) {
+func mapFile(mapf func(string, string) []KeyValue, mT *MapTaskReply) {
+	filename := mT.Filename
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
@@ -43,19 +44,23 @@ func mapFile(mapf func(string, string) []KeyValue, filename string) {
 	}
 	file.Close()
 	kva := mapf(filename, string(content))
-	encodeKV(kva, "out.json")
+	encodeKV(kva, mT.TaskId, mT.NReduce)
+	CallTaskCompleted(mT.TaskId)
 }
 
-func encodeKV(kva []KeyValue, filename string) {
-	file, err := os.Create("out.json")
-	if err != nil {
-		log.Fatalf("cannot open %v", filename)
-	}
-	enc := json.NewEncoder(file)
-	for _, kv := range kva {
-		err := enc.Encode(&kv)
+func encodeKV(kva []KeyValue, taskId int, nReduce int) {
+	mapOutSplit := make([]*json.Encoder, nReduce)
+	for i := 0; i < nReduce; i++ {
+		file, err := os.Create(fmt.Sprintf("mr-%v-%v", taskId, i))
 		if err != nil {
-			log.Fatalf("cannot encode %v to %v\n %v", kv, filename, err)
+			log.Fatalf("%v", err)
+		}
+		mapOutSplit[i] = json.NewEncoder(file)
+	}
+	for _, kv := range kva {
+		err := mapOutSplit[ihash(kv.Key)%nReduce].Encode(&kv)
+		if err != nil {
+			log.Fatalf("cannot encode %v: %v\n", kv, err)
 		}
 	}
 }
@@ -70,6 +75,18 @@ func CallGetMapTask() (bool, *MapTaskReply) {
 	} else {
 		fmt.Printf("[WORKER] GetMapTask failed")
 		return false, nil
+	}
+}
+
+func CallTaskCompleted(taskId int) bool {
+	var reply struct{}
+	ok := call("Coordinator.TaskCompleted", taskId, &reply)
+	if ok {
+		fmt.Printf("[WORKER] completed task")
+		return true
+	} else {
+		fmt.Printf("[WORKER] GetMapTask failed")
+		return false
 	}
 }
 
