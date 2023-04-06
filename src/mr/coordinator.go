@@ -17,10 +17,14 @@ fetchTask()
 
 type Coordinator struct {
 	// Your definitions here.
-	assignment                      map[WorkerId][]TaskId
-	nMap, nReduce                   int
-	nMapCompleted, nReduceCompleted int
-	nWorkers, nextWorkerId          int
+	/*
+		assignment                      map[WorkerId][]TaskId
+		nMap, nReduce                   int
+		nMapCompleted, nReduceCompleted int
+		nWorkers, nextWorkerId          int
+	*/
+	files   []string
+	nReduce int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -30,6 +34,13 @@ type Coordinator struct {
 // the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
+	return nil
+}
+
+func (c *Coordinator) GetMapTask(_ *struct{}, r *MapTaskReply) error {
+	if len(c.files) > 0 {
+		r.Filename = c.files[0]
+	}
 	return nil
 }
 
@@ -50,10 +61,8 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := true
-
+	ret := false
 	// Your code here.
-
 	return ret
 }
 
@@ -63,10 +72,8 @@ func (c *Coordinator) Done() bool {
 // and is the input to one Map task.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
-
+	c := Coordinator{files, nReduce}
 	// Your code here.
-
 	c.server()
 	return &c
 }
