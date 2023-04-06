@@ -133,7 +133,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	if err == nil {
 		return true
 	}
-
+	fmt.Println("[WORKER] exiting, call failed")
 	fmt.Println(err)
+	os.Exit(0)
 	return false
 }
