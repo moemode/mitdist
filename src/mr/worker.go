@@ -1,10 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
+	"os"
 )
 
 // Map functions return a slice of KeyValue.
@@ -23,18 +26,50 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	// Your worker implementation here.
-	CallGetMapTask()
+	ok, maptask := CallGetMapTask()
+	if ok {
+		mapFile(mapf, maptask.Filename)
+	}
 }
 
-func CallGetMapTask() {
+func mapFile(mapf func(string, string) []KeyValue, filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	encodeKV(kva, "out.json")
+}
+
+func encodeKV(kva []KeyValue, filename string) {
+	file, err := os.Create("out.json")
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	enc := json.NewEncoder(file)
+	for _, kv := range kva {
+		err := enc.Encode(&kv)
+		if err != nil {
+			log.Fatalf("cannot encode %v to %v\n %v", kv, filename, err)
+		}
+	}
+}
+
+func CallGetMapTask() (bool, *MapTaskReply) {
 	var args struct{}
 	reply := MapTaskReply{}
 	ok := call("Coordinator.GetMapTask", &args, &reply)
 	if ok {
 		fmt.Printf("[WORKER] got map task: %v\n", reply.Filename)
+		return true, &reply
 	} else {
 		fmt.Printf("[WORKER] GetMapTask failed")
+		return false, nil
 	}
 }
 
