@@ -45,14 +45,15 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		switch task := task.(type) {
 		case MapTaskReply:
 			mapFile(mapf, task)
+			CallTaskCompleted(task)
 		case ReduceTaskReply:
 			reduce(reducef, task.Partition, task.NMappers)
+			CallTaskCompleted(task)
 		case TerminateTaskReply:
 			os.Exit(0)
 		default:
 			log.Fatalf("Worker received unknown task type")
 		}
-		CallTaskCompleted(task)
 	}
 }
 

@@ -17,6 +17,7 @@ type TaskId int
 type Empty struct{}
 type Coordinator struct {
 	files                []string
+	nMap                 int
 	nReduce              int
 	done                 bool
 	mapUnfinished        []int
@@ -109,13 +110,16 @@ func (c *Coordinator) Done() bool {
 }
 
 func (c *Coordinator) findTask() interface{} {
-	ok, taskId := c.unfinishedMapTask()
-	if ok {
-		return MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
-	}
-	ok, partition := c.unfinishedReduceTask()
-	if ok {
-		return ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
+	if len(c.mapFinished) < c.nMap {
+		ok, taskId := c.unfinishedMapTask()
+		if ok {
+			return MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
+		}
+	} else if len(c.reduceFinished) < c.nReduce {
+		ok, partition := c.unfinishedReduceTask()
+		if ok {
+			return ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
+		}
 	}
 	return TerminateTaskReply{}
 }
@@ -148,6 +152,7 @@ func (c *Coordinator) unfinishedReduceTask() (bool, int) {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		files:                files,
+		nMap:                 len(files),
 		nReduce:              nReduce,
 		done:                 false,
 		mapUnfinished:        makeRange(0, len(files)),
