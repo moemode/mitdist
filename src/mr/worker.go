@@ -51,6 +51,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			reduce(reducef, task.Partition, task.NMappers)
 			CallTaskCompleted(task)
 		case TerminateTaskReply:
+			fmt.Println("[WORKER] Exit on TerminateTaskReply")
 			os.Exit(0)
 		default:
 			log.Fatalf("Worker received unknown task type")

@@ -29,7 +29,11 @@ type Coordinator struct {
 }
 
 func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
-	task := c.findTask()
+	found, task := c.findTask()
+	for !found {
+		time.Sleep(500 * time.Millisecond)
+		found, task = c.findTask()
+	}
 	r.Task = task
 	switch task := task.(type) {
 	case MapTaskReply:
@@ -109,19 +113,21 @@ func (c *Coordinator) Done() bool {
 	return c.done
 }
 
-func (c *Coordinator) findTask() interface{} {
+func (c *Coordinator) findTask() (bool, interface{}) {
 	if len(c.mapFinished) < c.nMap {
 		ok, taskId := c.unfinishedMapTask()
 		if ok {
-			return MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
+			return true, MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
 		}
 	} else if len(c.reduceFinished) < c.nReduce {
 		ok, partition := c.unfinishedReduceTask()
 		if ok {
-			return ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
+			return true, ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
 		}
+	} else {
+		return true, TerminateTaskReply{}
 	}
-	return TerminateTaskReply{}
+	return false, nil
 }
 
 func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
