@@ -83,7 +83,7 @@ func tmpFile() (string, *os.File, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	tmppath, err := filepath.Abs(filepath.Dir(ofile.Name()))
+	tmppath, err := filepath.Abs(ofile.Name())
 	return tmppath, ofile, err
 }
 
