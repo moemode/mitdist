@@ -23,36 +23,65 @@ type Coordinator struct {
 	mapFinished          map[int]Empty
 	mapTaskLock          sync.Mutex
 	reduceUnfinished     []int
+	reduceFinished       map[int]Empty
 	reduceUnfinishedLock sync.Mutex
 }
 
 func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
-	ok, taskId := c.unfinishedMapTask()
-	if ok {
-		r.Task = MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
-		go c.handleTimeout(taskId)
+	task := c.findTask()
+	r.Task = task
+	switch task := task.(type) {
+	case MapTaskReply:
+		go c.resetMap(task.TaskId)
+	case ReduceTaskReply:
+		go c.resetReduce(task.Partition)
+	default:
 	}
 	return nil
 }
 
-func (c *Coordinator) handleTimeout(taskId int) {
+func (c *Coordinator) TaskCompleted(task interface{}, _ *struct{}) error {
+	switch task := task.(type) {
+	case MapTaskReply:
+		c.completeMap(task.TaskId)
+	case ReduceTaskReply:
+		c.completeReduce(task.Partition)
+	}
+	return nil
+}
+
+func (c *Coordinator) resetReduce(partition int) {
+	c.resetTask(partition, &c.reduceUnfinishedLock, &c.reduceUnfinished, &c.reduceFinished)
+}
+
+func (c *Coordinator) resetMap(taskId int) {
+	c.resetTask(taskId, &c.mapTaskLock, &c.mapUnfinished, &c.mapFinished)
+}
+
+func (c *Coordinator) resetTask(taskId int, l *sync.Mutex, tasks *[]int, finished *map[int]Empty) {
 	<-time.After(10 * time.Second)
-	c.mapTaskLock.Lock()
-	defer c.mapTaskLock.Unlock()
-	_, finished := c.mapFinished[taskId]
-	if !finished {
-		c.mapUnfinished = append(c.mapUnfinished, taskId)
+	l.Lock()
+	defer l.Unlock()
+	_, fin := (*finished)[taskId]
+	if !fin {
+		*tasks = append(*tasks, taskId)
 	}
 }
 
-func (c *Coordinator) TaskCompleted(TaskId int, _ *struct{}) error {
-	c.mapTaskLock.Lock()
-	defer c.mapTaskLock.Unlock()
-	c.mapFinished[TaskId] = Empty{}
-	if len(c.mapFinished) == len(c.files) {
-		c.done = true
-	}
-	return nil
+func (c *Coordinator) completeMap(taskId int) {
+	c.complete(taskId, &c.mapTaskLock, &c.mapFinished)
+}
+
+func (c *Coordinator) completeReduce(partition int) {
+	c.complete(partition, &c.reduceUnfinishedLock, &c.reduceFinished)
+}
+
+func (c *Coordinator) complete(taskId int, l *sync.Mutex, finished *map[int]Empty) {
+	l.Lock()
+	defer l.Unlock()
+	(*finished)[taskId] = Empty{}
+	fmt.Printf("[COORDINTAOR] %v %v %v %v\n", len(c.mapFinished), len(c.files), len(c.reduceFinished), c.nReduce)
+	c.done = len(c.mapFinished) == len(c.files) && len(c.reduceFinished) == c.nReduce
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -79,11 +108,16 @@ func (c *Coordinator) Done() bool {
 	return c.done
 }
 
-func (c *Coordinator) findTask() (bool, interface{}) {
-	c.mapTaskLock.Lock()
-	if len(c.mapUnfinished) > 0 {
-		return c.unfinishedMapTask()
+func (c *Coordinator) findTask() interface{} {
+	ok, taskId := c.unfinishedMapTask()
+	if ok {
+		return MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
 	}
+	ok, partition := c.unfinishedReduceTask()
+	if ok {
+		return ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
+	}
+	return TerminateTaskReply{}
 }
 
 func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
@@ -99,15 +133,11 @@ func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
 }
 
 func (c *Coordinator) unfinishedMapTask() (bool, int) {
-	c.mapTaskLock.Lock()
-	defer c.mapTaskLock.Unlock()
-	if len(c.mapUnfinished) > 0 {
-		lastIndex := len(c.mapUnfinished) - 1
-		r := c.mapUnfinished[lastIndex]
-		c.mapUnfinished = c.mapUnfinished[:lastIndex]
-		return true, r
-	}
-	return false, 0
+	return c.unfinishedTask(&c.mapTaskLock, &c.mapUnfinished)
+}
+
+func (c *Coordinator) unfinishedReduceTask() (bool, int) {
+	return c.unfinishedTask(&c.reduceUnfinishedLock, &c.reduceUnfinished)
 }
 
 // create a Coordinator.
@@ -124,6 +154,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		mapFinished:          map[int]Empty{},
 		mapTaskLock:          sync.Mutex{},
 		reduceUnfinished:     makeRange(0, nReduce),
+		reduceFinished:       map[int]Empty{},
 		reduceUnfinishedLock: sync.Mutex{},
 	}
 	c.server()

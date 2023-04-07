@@ -43,6 +43,7 @@ type TerminateTaskReply struct{}
 
 type ReduceTaskReply struct {
 	Partition int
+	NMappers  int
 }
 
 type MapTaskReply struct {

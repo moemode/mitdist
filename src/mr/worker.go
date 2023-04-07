@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -15,6 +16,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -36,10 +45,60 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		switch task := task.(type) {
 		case MapTaskReply:
 			mapFile(mapf, task)
+		case ReduceTaskReply:
+			reduce(reducef, task.Partition, task.NMappers)
+		case TerminateTaskReply:
+			os.Exit(0)
 		default:
 			log.Fatalf("Worker received unknown task type")
 		}
+		CallTaskCompleted(task)
 	}
+}
+
+func readPartition(partition, nMappers int) []KeyValue {
+	kva := []KeyValue{}
+	for i := 0; i < nMappers; i++ {
+		filename := fmt.Sprintf("mr-%v-%v", i, partition)
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+	}
+	return kva
+}
+
+func reduce(reducef func(string, []string) string, partition int, nMappers int) {
+	intermediate := readPartition(partition, nMappers)
+	sort.Sort(ByKey(intermediate))
+	oname := fmt.Sprintf("mr-out-%v", partition)
+	ofile, _ := os.Create(oname)
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to ofile
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		i = j
+	}
+	ofile.Close()
 }
 
 func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
@@ -56,7 +115,6 @@ func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
 	kva := mapf(filename, string(content))
 	encodeKV(kva, mT.TaskId, mT.NReduce)
 	fmt.Printf("[WORKER] Completed %v\n", mT)
-	CallTaskCompleted(mT.TaskId)
 }
 
 func encodeKV(kva []KeyValue, taskId int, nReduce int) {
@@ -81,7 +139,7 @@ func CallGetTask() (bool, *TaskReply) {
 	reply := TaskReply{}
 	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
-		fmt.Printf("[WORKER] got task: %v\n", reply.Task)
+		fmt.Printf("[WORKER] got task: %+v\n", reply.Task)
 		return true, &reply
 	} else {
 		fmt.Printf("[WORKER] CallGetTask failed")
@@ -89,9 +147,9 @@ func CallGetTask() (bool, *TaskReply) {
 	}
 }
 
-func CallTaskCompleted(taskId int) bool {
+func CallTaskCompleted(task interface{}) bool {
 	var reply struct{}
-	ok := call("Coordinator.TaskCompleted", taskId, &reply)
+	ok := call("Coordinator.TaskCompleted", &task, &reply)
 	if ok {
 		return true
 	} else {
