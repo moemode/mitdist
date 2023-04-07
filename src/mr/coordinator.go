@@ -79,6 +79,25 @@ func (c *Coordinator) Done() bool {
 	return c.done
 }
 
+func (c *Coordinator) findTask() (bool, interface{}) {
+	c.mapTaskLock.Lock()
+	if len(c.mapUnfinished) > 0 {
+		return c.unfinishedMapTask()
+	}
+}
+
+func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
+	l.Lock()
+	defer l.Unlock()
+	if len(*tasks) > 0 {
+		lastIndex := len(*tasks) - 1
+		r := (*tasks)[lastIndex]
+		*tasks = (*tasks)[:lastIndex]
+		return true, r
+	}
+	return false, 0
+}
+
 func (c *Coordinator) unfinishedMapTask() (bool, int) {
 	c.mapTaskLock.Lock()
 	defer c.mapTaskLock.Unlock()
