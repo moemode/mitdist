@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"encoding/gob"
 	"fmt"
 	"log"
 	"net"
@@ -58,7 +57,7 @@ func (c *Coordinator) TaskCompleted(TaskId int, _ *struct{}) error {
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
-	gob.Register(MapTaskReply{})
+	initRPCDecode()
 	rpc.Register(c)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")

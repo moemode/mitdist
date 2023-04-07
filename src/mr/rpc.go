@@ -7,6 +7,7 @@ package mr
 //
 
 import (
+	"encoding/gob"
 	"os"
 	"strconv"
 )
@@ -50,6 +51,12 @@ type MapTaskReply struct {
 }
 
 // Add your RPC definitions here.
+
+func initRPCDecode() {
+	gob.Register(MapTaskReply{})
+	gob.Register(ReduceTaskReply{})
+	gob.Register(TerminateTaskReply{})
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

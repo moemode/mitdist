@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -27,7 +26,7 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	gob.Register(MapTaskReply{})
+	initRPCDecode()
 	ok, r := CallGetTask()
 	if !ok {
 		log.Fatalf("CallGetTask failed")
