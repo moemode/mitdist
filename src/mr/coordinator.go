@@ -29,7 +29,7 @@ type Coordinator struct {
 func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
 	ok, taskId := c.unfinishedMapTask()
 	if ok {
-		r.Task = MapTaskReply{Filename: c.files[0], TaskId: taskId, NReduce: c.nReduce}
+		r.Task = MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
 		go c.handleTimeout(taskId)
 	}
 	return nil

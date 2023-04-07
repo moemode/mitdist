@@ -27,18 +27,19 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	initRPCDecode()
-	ok, r := CallGetTask()
-	if !ok {
-		log.Fatalf("CallGetTask failed")
+	for {
+		ok, r := CallGetTask()
+		if !ok {
+			log.Fatalf("CallGetTask failed, coordinator done or unreachable, TERMINATE worker")
+		}
+		task := r.Task
+		switch task := task.(type) {
+		case MapTaskReply:
+			mapFile(mapf, task)
+		default:
+			log.Fatalf("Worker received unknown task type")
+		}
 	}
-	task := r.Task
-	switch task := task.(type) {
-	case MapTaskReply:
-		mapFile(mapf, task)
-	default:
-		log.Fatalf("Worker received unknown task type")
-	}
-
 }
 
 func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
@@ -54,6 +55,7 @@ func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
 	file.Close()
 	kva := mapf(filename, string(content))
 	encodeKV(kva, mT.TaskId, mT.NReduce)
+	fmt.Printf("[WORKER] Completed %v\n", mT)
 	CallTaskCompleted(mT.TaskId)
 }
 
@@ -82,7 +84,7 @@ func CallGetTask() (bool, *TaskReply) {
 		fmt.Printf("[WORKER] got task: %v\n", reply.Task)
 		return true, &reply
 	} else {
-		fmt.Printf("[WORKER] GetMapTask failed")
+		fmt.Printf("[WORKER] CallGetTask failed")
 		return false, nil
 	}
 }
@@ -91,10 +93,8 @@ func CallTaskCompleted(taskId int) bool {
 	var reply struct{}
 	ok := call("Coordinator.TaskCompleted", taskId, &reply)
 	if ok {
-		fmt.Printf("[WORKER] completed task")
 		return true
 	} else {
-		fmt.Printf("[WORKER] GetMapTask failed")
 		return false
 	}
 }
@@ -142,8 +142,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	if err == nil {
 		return true
 	}
-	fmt.Println("[WORKER] exiting, call failed")
 	fmt.Println(err)
-	os.Exit(0)
 	return false
 }
