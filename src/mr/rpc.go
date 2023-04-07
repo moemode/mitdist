@@ -24,6 +24,26 @@ type ExampleReply struct {
 	Y int
 }
 
+type TaskType int
+
+const (
+	MAP = iota
+	REDUCE
+	TERMINATE
+)
+
+type Reply = MapTaskReply
+
+type TaskReply struct {
+	Task interface{}
+}
+
+type TerminateTaskReply struct{}
+
+type ReduceTaskReply struct {
+	Partition int
+}
+
 type MapTaskReply struct {
 	Filename        string
 	NReduce, TaskId int

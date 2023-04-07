@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/gob"
 	"fmt"
 	"log"
 	"net"
@@ -26,14 +27,12 @@ type Coordinator struct {
 	reduceUnfinishedLock sync.Mutex
 }
 
-func (c *Coordinator) GetMapTask(_ *struct{}, r *MapTaskReply) error {
+func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
 	ok, taskId := c.unfinishedMapTask()
 	if ok {
-		r.Filename = c.files[0]
-		r.TaskId = taskId
-		r.NReduce = c.nReduce
+		r.Task = MapTaskReply{Filename: c.files[0], TaskId: taskId, NReduce: c.nReduce}
+		go c.handleTimeout(taskId)
 	}
-	go c.handleTimeout(taskId)
 	return nil
 }
 
@@ -59,6 +58,7 @@ func (c *Coordinator) TaskCompleted(TaskId int, _ *struct{}) error {
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
+	gob.Register(MapTaskReply{})
 	rpc.Register(c)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")

@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -26,13 +27,22 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	ok, maptask := CallGetMapTask()
-	if ok {
-		mapFile(mapf, maptask)
+	gob.Register(MapTaskReply{})
+	ok, r := CallGetTask()
+	if !ok {
+		log.Fatalf("CallGetTask failed")
 	}
+	task := r.Task
+	switch task := task.(type) {
+	case MapTaskReply:
+		mapFile(mapf, task)
+	default:
+		log.Fatalf("Worker received unknown task type")
+	}
+
 }
 
-func mapFile(mapf func(string, string) []KeyValue, mT *MapTaskReply) {
+func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
 	filename := mT.Filename
 	file, err := os.Open(filename)
 	if err != nil {
@@ -65,12 +75,12 @@ func encodeKV(kva []KeyValue, taskId int, nReduce int) {
 	}
 }
 
-func CallGetMapTask() (bool, *MapTaskReply) {
+func CallGetTask() (bool, *TaskReply) {
 	var args struct{}
-	reply := MapTaskReply{}
-	ok := call("Coordinator.GetMapTask", &args, &reply)
+	reply := TaskReply{}
+	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
-		fmt.Printf("[WORKER] got map task: %v\n", reply.Filename)
+		fmt.Printf("[WORKER] got task: %v\n", reply.Task)
 		return true, &reply
 	} else {
 		fmt.Printf("[WORKER] GetMapTask failed")
