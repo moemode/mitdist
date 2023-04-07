@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sort"
 )
 
@@ -77,11 +78,22 @@ func readPartition(partition, nMappers int) []KeyValue {
 	return kva
 }
 
+func tmpFile() (string, *os.File, error) {
+	ofile, err := ioutil.TempFile(".", "rdtmp")
+	if err != nil {
+		return "", nil, err
+	}
+	tmppath, err := filepath.Abs(filepath.Dir(ofile.Name()))
+	return tmppath, ofile, err
+}
+
 func reduce(reducef func(string, []string) string, partition int, nMappers int) {
 	intermediate := readPartition(partition, nMappers)
 	sort.Sort(ByKey(intermediate))
-	oname := fmt.Sprintf("mr-out-%v", partition)
-	ofile, _ := os.Create(oname)
+	tmppath, ofile, err := tmpFile()
+	if err != nil {
+		log.Fatalf("Could not create temporary file %v", err)
+	}
 	// call Reduce on each distinct key in intermediate[],
 	// and print the result to ofile
 	i := 0
@@ -98,6 +110,11 @@ func reduce(reducef func(string, []string) string, partition int, nMappers int) 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 		i = j
+	}
+	oname := fmt.Sprintf("mr-out-%v", partition)
+	err = os.Rename(tmppath, filepath.Join(filepath.Dir(tmppath), oname))
+	if err != nil {
+		log.Fatal(err)
 	}
 	ofile.Close()
 }
