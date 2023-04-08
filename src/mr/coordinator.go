@@ -11,21 +11,20 @@ import (
 	"time"
 )
 
-type WorkerId int
-type TaskId int
-
 type Empty struct{}
 type Coordinator struct {
-	files                []string
-	nMap                 int
-	nReduce              int
-	done                 bool
-	mapUnfinished        []int
-	mapFinished          map[int]Empty
-	mapTaskLock          sync.Mutex
-	reduceUnfinished     []int
-	reduceFinished       map[int]Empty
-	reduceUnfinishedLock sync.Mutex
+	files   []string
+	nMap    int
+	nReduce int
+	done    bool
+
+	mapUnfinished []int
+	mapFinished   map[int]Empty
+	mapLock       sync.Mutex
+
+	reduceUnfinished []int
+	reduceFinished   map[int]Empty
+	reduceLock       sync.Mutex
 }
 
 func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
@@ -45,7 +44,7 @@ func (c *Coordinator) GetTask(_ *struct{}, r *TaskReply) error {
 	return nil
 }
 
-func (c *Coordinator) TaskCompleted(task interface{}, _ *struct{}) error {
+func (c *Coordinator) FinishTask(task interface{}, _ *Empty) error {
 	switch task := task.(type) {
 	case MapTaskReply:
 		c.completeMap(task.TaskId)
@@ -56,11 +55,11 @@ func (c *Coordinator) TaskCompleted(task interface{}, _ *struct{}) error {
 }
 
 func (c *Coordinator) resetReduce(partition int) {
-	c.resetTask(partition, &c.reduceUnfinishedLock, &c.reduceUnfinished, &c.reduceFinished)
+	c.resetTask(partition, &c.reduceLock, &c.reduceUnfinished, &c.reduceFinished)
 }
 
 func (c *Coordinator) resetMap(taskId int) {
-	c.resetTask(taskId, &c.mapTaskLock, &c.mapUnfinished, &c.mapFinished)
+	c.resetTask(taskId, &c.mapLock, &c.mapUnfinished, &c.mapFinished)
 }
 
 func (c *Coordinator) resetTask(taskId int, l *sync.Mutex, tasks *[]int, finished *map[int]Empty) {
@@ -74,18 +73,18 @@ func (c *Coordinator) resetTask(taskId int, l *sync.Mutex, tasks *[]int, finishe
 }
 
 func (c *Coordinator) completeMap(taskId int) {
-	c.complete(taskId, &c.mapTaskLock, &c.mapFinished)
+	c.completeTask(taskId, &c.mapLock, &c.mapFinished)
 }
 
 func (c *Coordinator) completeReduce(partition int) {
-	c.complete(partition, &c.reduceUnfinishedLock, &c.reduceFinished)
+	c.completeTask(partition, &c.reduceLock, &c.reduceFinished)
 }
 
-func (c *Coordinator) complete(taskId int, l *sync.Mutex, finished *map[int]Empty) {
+func (c *Coordinator) completeTask(taskId int, l *sync.Mutex, finished *map[int]Empty) {
 	l.Lock()
 	defer l.Unlock()
 	(*finished)[taskId] = Empty{}
-	fmt.Printf("[COORDINTAOR] %v %v %v %v\n", len(c.mapFinished), len(c.files), len(c.reduceFinished), c.nReduce)
+	fmt.Printf("[COORDINTAOR] MAP: %v/%v\tREDUCE:%v/%v\n", len(c.mapFinished), len(c.files), len(c.reduceFinished), c.nReduce)
 	c.done = len(c.mapFinished) == len(c.files) && len(c.reduceFinished) == c.nReduce
 }
 
@@ -108,7 +107,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	if c.done {
-		fmt.Println("Coordinator is done.")
+		fmt.Println("[COORDINATOR] Done.")
 	}
 	return c.done
 }
@@ -143,11 +142,11 @@ func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
 }
 
 func (c *Coordinator) unfinishedMapTask() (bool, int) {
-	return c.unfinishedTask(&c.mapTaskLock, &c.mapUnfinished)
+	return c.unfinishedTask(&c.mapLock, &c.mapUnfinished)
 }
 
 func (c *Coordinator) unfinishedReduceTask() (bool, int) {
-	return c.unfinishedTask(&c.reduceUnfinishedLock, &c.reduceUnfinished)
+	return c.unfinishedTask(&c.reduceLock, &c.reduceUnfinished)
 }
 
 // create a Coordinator.
@@ -157,16 +156,16 @@ func (c *Coordinator) unfinishedReduceTask() (bool, int) {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		files:                files,
-		nMap:                 len(files),
-		nReduce:              nReduce,
-		done:                 false,
-		mapUnfinished:        makeRange(0, len(files)),
-		mapFinished:          map[int]Empty{},
-		mapTaskLock:          sync.Mutex{},
-		reduceUnfinished:     makeRange(0, nReduce),
-		reduceFinished:       map[int]Empty{},
-		reduceUnfinishedLock: sync.Mutex{},
+		files:            files,
+		nMap:             len(files),
+		nReduce:          nReduce,
+		done:             false,
+		mapUnfinished:    makeRange(0, len(files)),
+		mapFinished:      map[int]Empty{},
+		mapLock:          sync.Mutex{},
+		reduceUnfinished: makeRange(0, nReduce),
+		reduceFinished:   map[int]Empty{},
+		reduceLock:       sync.Mutex{},
 	}
 	c.server()
 	return &c

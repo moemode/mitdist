@@ -1,39 +1,10 @@
 package mr
 
-//
-// RPC definitions.
-//
-// remember to capitalize all names.
-//
-
 import (
 	"encoding/gob"
 	"os"
 	"strconv"
 )
-
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
-
-type TaskType int
-
-const (
-	MAP = iota
-	REDUCE
-	TERMINATE
-)
-
-type Reply = MapTaskReply
 
 type TaskReply struct {
 	Task interface{}
