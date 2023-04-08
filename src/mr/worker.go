@@ -19,19 +19,23 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		if !ok {
 			log.Fatalf("CallGetTask failed, coordinator done or unreachable, TERMINATE worker")
 		}
-		task := r.Task
-		switch task := task.(type) {
-		case MapTaskReply:
-			mapFile(mapf, task)
-		case ReduceTaskReply:
-			reduce(reducef, task.Partition, task.NMappers)
-		case TerminateTaskReply:
-			fmt.Println("[WORKER] Exit on TerminateTaskReply")
-			os.Exit(0)
-		default:
-			log.Fatalf("Worker received unknown task type")
-		}
+		executeTask(r.Task, mapf, reducef)
+	}
+}
+
+func executeTask(task interface{}, mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	switch task := task.(type) {
+	case MapTaskReply:
+		mapFile(mapf, task)
 		CallTaskCompleted(task)
+	case ReduceTaskReply:
+		reduce(reducef, task.Partition, task.NMappers)
+		CallTaskCompleted(task)
+	case TerminateTaskReply:
+		fmt.Println("[WORKER] Exit on TerminateTaskReply")
+		os.Exit(0)
+	default:
+		log.Fatalf("Worker received unknown task type")
 	}
 }
 
@@ -55,45 +59,40 @@ func readPartition(partition, nMappers int) []KeyValue {
 	return kva
 }
 
-func tmpFile() (string, *os.File, error) {
-	ofile, err := ioutil.TempFile(".", "rdtmp")
-	if err != nil {
-		return "", nil, err
-	}
-	tmppath, err := filepath.Abs(ofile.Name())
-	return tmppath, ofile, err
-}
-
 func reduce(reducef func(string, []string) string, partition int, nMappers int) {
-	intermediate := readPartition(partition, nMappers)
-	sort.Sort(ByKey(intermediate))
 	tmppath, ofile, err := tmpFile()
 	if err != nil {
 		log.Fatalf("Could not create temporary file %v", err)
 	}
+	intermediate := readPartition(partition, nMappers)
+	sort.Sort(ByKey(intermediate))
 	// call Reduce on each distinct key in intermediate[],
 	// and print the result to ofile
-	i := 0
-	for i < len(intermediate) {
-		j := i + 1
-		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-			j++
-		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
-		}
-		output := reducef(intermediate[i].Key, values)
-		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-		i = j
-	}
+	reduceSorted(intermediate, ofile, reducef)
 	oname := fmt.Sprintf("mr-out-%v", partition)
 	err = os.Rename(tmppath, filepath.Join(filepath.Dir(tmppath), oname))
 	if err != nil {
 		log.Fatal(err)
 	}
 	ofile.Close()
+}
+
+func reduceSorted(kvs []KeyValue, ofile *os.File, reducef func(string, []string) string) {
+	i := 0
+	for i < len(kvs) {
+		j := i + 1
+		for j < len(kvs) && kvs[j].Key == kvs[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvs[k].Value)
+		}
+		output := reducef(kvs[i].Key, values)
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kvs[i].Key, output)
+		i = j
+	}
 }
 
 func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
@@ -112,7 +111,7 @@ func mapFile(mapf func(string, string) []KeyValue, mT MapTaskReply) {
 	fmt.Printf("[WORKER] Completed %v\n", mT)
 }
 
-func encodeKV(kva []KeyValue, taskId int, nReduce int) {
+func encodeKV(kvs []KeyValue, taskId int, nReduce int) {
 	mapOutSplit := make([]*json.Encoder, nReduce)
 	for i := 0; i < nReduce; i++ {
 		file, err := os.Create(fmt.Sprintf("mr-%v-%v", taskId, i))
@@ -121,7 +120,7 @@ func encodeKV(kva []KeyValue, taskId int, nReduce int) {
 		}
 		mapOutSplit[i] = json.NewEncoder(file)
 	}
-	for _, kv := range kva {
+	for _, kv := range kvs {
 		err := mapOutSplit[ihash(kv.Key)%nReduce].Encode(&kv)
 		if err != nil {
 			log.Fatalf("cannot encode %v: %v\n", kv, err)
