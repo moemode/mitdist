@@ -88,6 +88,32 @@ func (c *Coordinator) completeTask(taskId int, l *sync.Mutex, finished *map[int]
 	c.done = len(c.mapFinished) == len(c.files) && len(c.reduceFinished) == c.nReduce
 }
 
+func (c *Coordinator) findTask() (bool, interface{}) {
+	// even if there are unfinished maps, there might be no unassigned map task
+	if len(c.mapFinished) < c.nMap {
+		ok, taskId := c.unassignedMap()
+		if ok {
+			return true, MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
+		}
+	} else if len(c.reduceFinished) < c.nReduce {
+		ok, partition := c.unassignedReduce()
+		if ok {
+			return true, ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
+		}
+	} else {
+		return true, TerminateTaskReply{}
+	}
+	return false, nil
+}
+
+func (c *Coordinator) unassignedMap() (bool, int) {
+	return popLast(&c.mapLock, &c.mapUnfinished)
+}
+
+func (c *Coordinator) unassignedReduce() (bool, int) {
+	return popLast(&c.reduceLock, &c.reduceUnfinished)
+}
+
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
 	initRPCDecode()
@@ -110,43 +136,6 @@ func (c *Coordinator) Done() bool {
 		fmt.Println("[COORDINATOR] Done.")
 	}
 	return c.done
-}
-
-func (c *Coordinator) findTask() (bool, interface{}) {
-	if len(c.mapFinished) < c.nMap {
-		ok, taskId := c.unfinishedMapTask()
-		if ok {
-			return true, MapTaskReply{Filename: c.files[taskId], TaskId: taskId, NReduce: c.nReduce}
-		}
-	} else if len(c.reduceFinished) < c.nReduce {
-		ok, partition := c.unfinishedReduceTask()
-		if ok {
-			return true, ReduceTaskReply{Partition: partition, NMappers: len(c.files)}
-		}
-	} else {
-		return true, TerminateTaskReply{}
-	}
-	return false, nil
-}
-
-func (c *Coordinator) unfinishedTask(l *sync.Mutex, tasks *[]int) (bool, int) {
-	l.Lock()
-	defer l.Unlock()
-	if len(*tasks) > 0 {
-		lastIndex := len(*tasks) - 1
-		r := (*tasks)[lastIndex]
-		*tasks = (*tasks)[:lastIndex]
-		return true, r
-	}
-	return false, 0
-}
-
-func (c *Coordinator) unfinishedMapTask() (bool, int) {
-	return c.unfinishedTask(&c.mapLock, &c.mapUnfinished)
-}
-
-func (c *Coordinator) unfinishedReduceTask() (bool, int) {
-	return c.unfinishedTask(&c.reduceLock, &c.reduceUnfinished)
 }
 
 // create a Coordinator.
