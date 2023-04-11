@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -73,14 +74,14 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	stateCL                           *sync.Cond
-	followerCh, candidateCh, leaderCh chan bool
-	nPeers, nMajority                 int
-	currentTerm, votedFor             int
-	log                               []LogEntry
-	lastLogTerm, lastLogIndex         int
-	gotAppendEntries                  bool
-	state                             State
+	stateCL                                                     *sync.Cond
+	followerCh, candidateCh, leaderCh, stopElection, stopTicker chan bool
+	nPeers, nMajority                                           int
+	currentTerm, votedFor                                       int
+	log                                                         []LogEntry
+	lastLogTerm, lastLogIndex                                   int
+	gotAppendEntries                                            bool
+	state                                                       State
 }
 
 // return currentTerm and whether this server
@@ -173,6 +174,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.followIfLarger(args.Term)
+	if rf.state == CANDIDATE && rf.currentTerm == args.Term {
+		rf.votedFor = -1
+		rf.state = FOLLOWER
+	}
 	rf.gotAppendEntries = true
 }
 
@@ -255,7 +260,9 @@ func (rf *Raft) reqAppendEntries(server int, args *AppendEntriesArgs) bool {
 	var reply AppendEntriesReply
 	ok := rf.sendAppendEntries(server, args, &reply)
 	if ok {
+		rf.mu.Lock()
 		rf.followIfLarger(reply.Term)
+		rf.mu.Unlock()
 	}
 	return ok
 }
@@ -265,7 +272,10 @@ func (rf *Raft) reqRequestVote(server int, args *RequestVoteArgs, outcome chan i
 	ok := rf.sendRequestVote(server, args, &reply)
 	v := 0
 	if ok {
-		if rf.followIfLarger(reply.Term) {
+		rf.mu.Lock()
+		f := rf.followIfLarger(reply.Term)
+		rf.mu.Unlock()
+		if f {
 			return
 		}
 		if reply.VoteGranted {
@@ -275,35 +285,71 @@ func (rf *Raft) reqRequestVote(server int, args *RequestVoteArgs, outcome chan i
 	outcome <- v
 }
 
-func (rf *Raft) startElection() {
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
+func (rf *Raft) reqRequestAllVotes(args *RequestVoteArgs) chan int {
+	c := make(chan int)
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		go rf.reqRequestVote(i, args, c)
+	}
+	return c
+}
+
+func (rf *Raft) gatherVotesOrQuit(votes chan int, q chan bool) bool {
 	nVotes := 1
 	nMeVotes := 1
+	outstanding := rf.nPeers - 1
+	for {
+		select {
+		case <-q:
+			//potentially pass q to rpc callers and cancel here by sending outstanding on q
+			return false
+		case v := <-votes:
+			outstanding -= 1
+			nVotes += 1
+			nMeVotes += v
+			if nMeVotes >= rf.nMajority {
+				return true
+			} else if nMeVotes+outstanding < rf.nMajority {
+				return false
+			}
+		}
+	}
+}
+
+func (rf *Raft) startElection() {
+	rf.mu.Lock()
+	if rf.state != CANDIDATE {
+		rf.mu.Unlock()
+		return
+	}
+	if rf.stopElection != nil {
+		log.Fatalf("[REPLICA %v] Entering startElection: rf.stopElection != nil", rf.me)
+	}
+	rf.stopElection = make(chan bool)
+
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
 		LastLogIndex: rf.lastLogIndex,
 		LastLogTerm:  rf.lastLogTerm,
 	}
-	c := make(chan int)
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			continue
-		}
-		go rf.reqRequestVote(i, &args, c)
+	rf.mu.Unlock()
+	votes := rf.reqRequestAllVotes(&args)
+	becomeLeader := rf.gatherVotesOrQuit(votes, rf.stopElection)
+	rf.mu.Lock()
+	if rf.state == CANDIDATE && becomeLeader {
+		rf.state = LEADER
 	}
-	outstanding := rf.nPeers - 1
-	for v := range c {
-		outstanding -= 1
-		nVotes += 1
-		nMeVotes += v
-		if nMeVotes >= rf.nMajority {
-			rf.state = LEADER
-		} else if nMeVotes+outstanding < rf.nMajority {
-			break
-		}
-	}
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.state = LEADER
+	rf.stopTicker <- true
 }
 
 func (rf *Raft) lead() {
@@ -366,18 +412,28 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+	q := make(chan bool)
 	for !rf.killed() {
 		// Your code here (2A)
 		// Check if a leader election should be started.
+		rf.mu.Lock()
+		rf.stopTicker = q
 		if rf.state == FOLLOWER && !rf.gotAppendEntries && rf.votedFor == -1 {
 			go rf.startElection()
 		} else if rf.state == CANDIDATE {
 			go rf.startElection()
 		}
+		rf.mu.Unlock()
 		// pause for a random amount of time between 500 and 1000
 		// milliseconds.
 		ms := 500 + (rand.Int63() % 500)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		select {
+		case <-q:
+			return
+		default:
+			continue
+		}
 	}
 }
 
@@ -426,6 +482,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.gotAppendEntries = false
 	rf.state = FOLLOWER
 	rf.stateCL = sync.NewCond(&rf.mu)
+	rf.stopElection = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
