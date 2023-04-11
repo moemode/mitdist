@@ -73,12 +73,14 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	nPeers, nMajority         int
-	currentTerm, votedFor     int
-	log                       []LogEntry
-	lastLogTerm, lastLogIndex int
-	gotAppendEntries          bool
-	state                     State
+	stateCL                           *sync.Cond
+	followerCh, candidateCh, leaderCh chan bool
+	nPeers, nMajority                 int
+	currentTerm, votedFor             int
+	log                               []LogEntry
+	lastLogTerm, lastLogIndex         int
+	gotAppendEntries                  bool
+	state                             State
 }
 
 // return currentTerm and whether this server
@@ -171,7 +173,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.followIfLarger(args.Term)
-
 	rf.gotAppendEntries = true
 }
 
@@ -274,11 +275,11 @@ func (rf *Raft) reqRequestVote(server int, args *RequestVoteArgs, outcome chan i
 	outcome <- v
 }
 
-func (rf *Raft) startElection() bool {
+func (rf *Raft) startElection() {
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 	nVotes := 1
-	nVotesReceived := 1
+	nMeVotes := 1
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -296,14 +297,13 @@ func (rf *Raft) startElection() bool {
 	for v := range c {
 		outstanding -= 1
 		nVotes += 1
-		nVotesReceived += v
-		if nVotesReceived >= rf.nMajority {
-			rf.lead()
-		} else if nVotesReceived+outstanding < rf.nMajority {
+		nMeVotes += v
+		if nMeVotes >= rf.nMajority {
+			rf.state = LEADER
+		} else if nMeVotes+outstanding < rf.nMajority {
 			break
 		}
 	}
-	return false
 }
 
 func (rf *Raft) lead() {
@@ -367,7 +367,6 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-
 		// Your code here (2A)
 		// Check if a leader election should be started.
 		if rf.state == FOLLOWER && !rf.gotAppendEntries && rf.votedFor == -1 {
@@ -379,6 +378,21 @@ func (rf *Raft) ticker() {
 		// milliseconds.
 		ms := 500 + (rand.Int63() % 500)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) serve() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		oldState := rf.state
+		for oldState == rf.state {
+			rf.stateCL.Wait()
+		}
+		//sleeplock
+		rf.leaderCh <- (rf.state == LEADER)
+		rf.candidateCh <- (rf.state == CANDIDATE)
+		rf.followerCh <- (rf.state == FOLLOWER)
+		rf.mu.Unlock()
 	}
 }
 
@@ -399,6 +413,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.followerCh = make(chan bool)
+	rf.candidateCh = make(chan bool)
+	rf.leaderCh = make(chan bool)
 	rf.nPeers = len(peers)
 	rf.nMajority = (rf.nPeers / 2) + 1
 	rf.currentTerm = -1
@@ -408,6 +425,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastLogIndex = -1
 	rf.gotAppendEntries = false
 	rf.state = FOLLOWER
+	rf.stateCL = sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
