@@ -317,11 +317,7 @@ func (rf *Raft) lead() {
 				continue
 			}
 			go func(server int) {
-				var reply AppendEntriesReply
-				ok := rf.reqAppendEntries(server, &args)
-				if ok {
-					rf.followIfLarger(reply.Term)
-				}
+				rf.reqAppendEntries(server, &args)
 			}(i)
 		}
 		time.Sleep(110 * time.Millisecond)
