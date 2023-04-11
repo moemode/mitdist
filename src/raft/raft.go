@@ -170,6 +170,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.success = false
 		return
 	}
+	rf.followIfLarger(args.Term)
+
 	rf.gotAppendEntries = true
 }
 
@@ -183,12 +185,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		return
 	}
-	rf.becomeFollower(args.Term)
+	rf.followIfLarger(args.Term)
 	reply.Term = rf.currentTerm
-	reply.VoteGranted = rf.voteFor(args)
+	reply.VoteGranted = rf.vote(args)
+	if reply.VoteGranted {
+		rf.votedFor = args.CandidateId
+	}
 }
 
-func (rf *Raft) voteFor(args *RequestVoteArgs) bool {
+func (rf *Raft) vote(args *RequestVoteArgs) bool {
 	voteAvailable := rf.votedFor == -1 || rf.votedFor == args.CandidateId
 	return voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
 }
@@ -197,7 +202,7 @@ func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
 	return (lastTerm >= rf.lastLogTerm) || (lastTerm == rf.lastLogTerm && lastIndex >= rf.lastLogIndex)
 }
 
-func (rf *Raft) becomeFollower(newTerm int) bool {
+func (rf *Raft) followIfLarger(newTerm int) bool {
 	// TODO: Abort election here?
 	if newTerm > rf.currentTerm {
 		rf.currentTerm = newTerm
@@ -245,12 +250,21 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) requestVote(server int, args *RequestVoteArgs, outcome chan int) {
+func (rf *Raft) reqAppendEntries(server int, args *AppendEntriesArgs) bool {
+	var reply AppendEntriesReply
+	ok := rf.sendAppendEntries(server, args, &reply)
+	if ok {
+		rf.followIfLarger(reply.Term)
+	}
+	return ok
+}
+
+func (rf *Raft) reqRequestVote(server int, args *RequestVoteArgs, outcome chan int) {
 	var reply RequestVoteReply
 	ok := rf.sendRequestVote(server, args, &reply)
 	v := 0
 	if ok {
-		if rf.becomeFollower(reply.Term) {
+		if rf.followIfLarger(reply.Term) {
 			return
 		}
 		if reply.VoteGranted {
@@ -276,7 +290,7 @@ func (rf *Raft) startElection() bool {
 		if i == rf.me {
 			continue
 		}
-		go rf.requestVote(i, &args, c)
+		go rf.reqRequestVote(i, &args, c)
 	}
 	outstanding := rf.nPeers - 1
 	for v := range c {
@@ -289,10 +303,29 @@ func (rf *Raft) startElection() bool {
 			break
 		}
 	}
+	return false
 }
 
 func (rf *Raft) lead() {
 	rf.state = LEADER
+	for rf.state == LEADER {
+		args := AppendEntriesArgs{
+			Term: rf.currentTerm,
+		}
+		for i := 0; i < rf.nPeers; i++ {
+			if i == rf.me {
+				continue
+			}
+			go func(server int) {
+				var reply AppendEntriesReply
+				ok := rf.reqAppendEntries(server, &args)
+				if ok {
+					rf.followIfLarger(reply.Term)
+				}
+			}(i)
+		}
+		time.Sleep(110 * time.Millisecond)
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -337,11 +370,11 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-		if rf.state == FOLLOWER && rf.gotAppendEntries == false {
+		if rf.state == FOLLOWER && !rf.gotAppendEntries && rf.votedFor == -1 {
 			go rf.startElection()
 		} else if rf.state == CANDIDATE {
 			go rf.startElection()
