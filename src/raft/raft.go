@@ -56,6 +56,14 @@ type LogEntry struct {
 	Command     interface{}
 }
 
+type State int
+
+const (
+	FOLLOWER State = iota
+	CANDIDATE
+	LEADER
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -72,7 +80,7 @@ type Raft struct {
 	log                       []LogEntry
 	lastLogTerm, lastLogIndex int
 	heardOrVotedAt            time.Time
-	lead                      bool
+	state                     State
 }
 
 // return currentTerm and whether this server
@@ -81,7 +89,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// Your code here (2A).
-	return rf.currentTerm, rf.lead
+	return rf.currentTerm, rf.state == LEADER
 }
 
 // save Raft's persistent state to stable storage,
@@ -220,7 +228,7 @@ func (rf *Raft) followIfLarger(newTerm int) {
 	if newTerm > rf.currentTerm {
 		rf.currentTerm = newTerm
 		rf.votedFor = -1
-		rf.lead = false
+		rf.state = FOLLOWER
 	}
 }
 
@@ -288,15 +296,19 @@ func (rf *Raft) election() {
 	}
 	me := rf.me
 	preGatherTerm := rf.currentTerm
+	rf.state = CANDIDATE
 	rf.mu.Unlock()
 	elected := rf.gatherVotes(&args, me)
-	//REAQUIRE: check if still same term
+	//REAQUIRE: check if still same term and candidate
+	// might no longer be candidate, e.g. because converted to follower (term would have been increased)
+	// or received appendEntries with same term (term would not have been increased, but impossible to receive majority in same term,
+	// ergo elected is false in this case
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
-	if rf.currentTerm == preGatherTerm && elected {
+	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
 		log.Printf("[REPLICA %v] I AM LEADER\n", rf.me)
-		rf.lead = true
+		rf.state = LEADER
 	}
 }
 
@@ -332,15 +344,15 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 }
 
 func (rf *Raft) ticker() {
+	// pause for a random amount of time between 300 and 600
 	timeout := time.Duration(300+(rand.Int63()%300)) * time.Millisecond
 	for !rf.killed() {
 		// Your code here (2A)
-		// Check if a leader election should be started.
-		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		rf.mu.Lock()
 		switch {
-		case !rf.lead && time.Since(rf.heardOrVotedAt) > timeout:
+		// Check if a leader election should be started.
+		case rf.state != LEADER && time.Since(rf.heardOrVotedAt) > timeout:
 			go rf.election()
 			// rf.election unlocks rf.mu for us
 			timeout = time.Duration(300+(rand.Int63()%300)) * time.Millisecond
@@ -375,7 +387,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastLogTerm = -1
 	rf.lastLogIndex = -1
 	rf.heardOrVotedAt = time.Now()
-	rf.lead = false
+	rf.state = FOLLOWER
 	log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
