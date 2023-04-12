@@ -49,6 +49,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Index, Term int
+	Command     interface{}
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -60,7 +65,11 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	peersCount                int64
+	currentTerm, votedFor     int
+	log                       []LogEntry
+	lastLogTerm, lastLogIndex int
+	gotAppendEntries          bool
 }
 
 // return currentTerm and whether this server
@@ -210,6 +219,14 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) nPeers() int64 {
+	return atomic.LoadInt64(&rf.peersCount)
+}
+
+func (rf *Raft) majority() int64 {
+	return (rf.nPeers() / 2) + 1
+}
+
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
@@ -240,7 +257,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-
+	rf.peersCount = int64(len(rf.peers))
+	rf.currentTerm = -1
+	rf.votedFor = -1
+	rf.log = make([]LogEntry, 1)
+	rf.lastLogTerm = -1
+	rf.lastLogIndex = -1
+	rf.gotAppendEntries = false
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
