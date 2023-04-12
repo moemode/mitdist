@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -69,7 +70,7 @@ type Raft struct {
 	currentTerm, votedFor     int
 	log                       []LogEntry
 	lastLogTerm, lastLogIndex int
-	gotAppendEntries          bool
+	heardOrVotedAt            time.Time
 }
 
 // return currentTerm and whether this server
@@ -230,16 +231,33 @@ func (rf *Raft) majority() int64 {
 	return (rf.nPeers() / 2) + 1
 }
 
+func (rf *Raft) election() {
+	log.Printf("[REPLICA %v] Starting Election", rf.me)
+}
+
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		started := time.Now()
+		timeout := time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
+	loop:
+		for !rf.killed() {
+			rf.mu.Lock()
+			heardOrVoted := rf.heardOrVotedAt
+			rf.mu.Unlock()
+			switch {
+			case time.Since(heardOrVoted) > timeout:
+				rf.election()
+			case time.Since(started) > timeout:
+				break loop
+			default:
+				time.Sleep(time.Duration(10) * time.Millisecond)
+			}
+		}
 	}
 }
 
@@ -266,7 +284,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry, 1)
 	rf.lastLogTerm = -1
 	rf.lastLogIndex = -1
-	rf.gotAppendEntries = false
+	rf.heardOrVotedAt = time.Now()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
