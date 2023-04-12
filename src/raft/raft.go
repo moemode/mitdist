@@ -329,7 +329,7 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 		}
 		go func(i int, args *RequestVoteArgs) {
 			var reply RequestVoteReply
-			ok := rf.sendRequestVote(i, args, &reply)
+			ok := rf.requestVote(i, args, &reply)
 			mu.Lock()
 			defer mu.Unlock()
 			if ok && reply.VoteGranted {
