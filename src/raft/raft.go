@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+
 	"log"
 	"math/rand"
 	"sync"
@@ -160,6 +161,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = rf.vote(args)
 	if reply.VoteGranted {
+		log.Printf("%v granted vote to %v", rf.me, args.CandidateId)
 		rf.votedFor = args.CandidateId
 		rf.heardOrVotedAt = time.Now()
 	}
@@ -291,20 +293,22 @@ func (rf *Raft) election(term int) {
 		LastLogTerm:  rf.lastLogTerm,
 	}
 	me := rf.me
+	preGatherTerm := rf.currentTerm
 	rf.mu.Unlock()
 	elected := rf.gatherVotes(&args, me)
 	//REAQUIRE: check if still same term
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.currentTerm == term && elected {
-		log.Printf("[REPLICA %v] I AM LEADER", rf.me)
+	log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != term)
+	if rf.currentTerm == preGatherTerm && elected {
+		log.Printf("[REPLICA %v] I AM LEADER\n", rf.me)
 		rf.lead = true
 	}
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
-	count := 0
-	finished := 0
+	count := 1
+	finished := 1
 	var mu sync.Mutex
 	cond := sync.NewCond(&mu)
 	for i := 0; i < int(rf.nPeers()); i++ {
@@ -319,6 +323,7 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 			if ok && reply.VoteGranted {
 				count++
 			}
+			log.Printf("[REPLICA %v] got response from %v\n", me, i)
 			finished++
 			cond.Broadcast()
 		}(i, args)
@@ -328,11 +333,12 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 	for count < int(rf.majority()) && finished != int(rf.nPeers()) {
 		cond.Wait()
 	}
+	log.Printf("[REPLICA %v] completed election, leader: %v\n", me, count >= int(rf.majority()))
 	return count >= int(rf.majority())
 }
 
 func (rf *Raft) ticker() {
-	timeout := time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
+	timeout := time.Duration(200+(rand.Int63()%5000)) * time.Millisecond
 	for !rf.killed() {
 		// Your code here (2A)
 		// Check if a leader election should be started.
@@ -347,7 +353,7 @@ func (rf *Raft) ticker() {
 		case lead: // do nothing if leading
 		case time.Since(heardOrVoted) > timeout:
 			go rf.election(term)
-			timeout = time.Duration(200+(rand.Int63()%2000)) * time.Millisecond
+			timeout = time.Duration(200+(rand.Int63()%5000)) * time.Millisecond
 		}
 		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
@@ -378,6 +384,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastLogIndex = -1
 	rf.heardOrVotedAt = time.Now()
 	rf.lead = false
+	log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
