@@ -274,14 +274,8 @@ func (rf *Raft) majority() int64 {
 }
 
 // Run an election for term. If term has passed do nothing.
-func (rf *Raft) election(term int) {
+func (rf *Raft) election() {
 	log.Printf("[REPLICA %v] Starting Election", rf.me)
-	rf.mu.Lock()
-	if term != rf.currentTerm {
-		log.Printf("[REPLICA %v] Abort Election outdated term: %v\n", rf.me, term != rf.currentTerm)
-		rf.mu.Unlock()
-		return
-	}
 	// term is current and have not voted for anyone
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
@@ -345,15 +339,13 @@ func (rf *Raft) ticker() {
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		rf.mu.Lock()
-		heardOrVoted := rf.heardOrVotedAt
-		term := rf.currentTerm
-		lead := rf.lead
-		rf.mu.Unlock()
 		switch {
-		case lead: // do nothing if leading
-		case time.Since(heardOrVoted) > timeout:
-			go rf.election(term)
+		case !rf.lead && time.Since(rf.heardOrVotedAt) > timeout:
+			go rf.election()
+			// rf.election unlocks rf.mu for us
 			timeout = time.Duration(300+(rand.Int63()%300)) * time.Millisecond
+		default:
+			rf.mu.Unlock()
 		}
 		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
