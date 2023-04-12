@@ -338,7 +338,7 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 }
 
 func (rf *Raft) ticker() {
-	timeout := time.Duration(200+(rand.Int63()%3000)) * time.Millisecond
+	timeout := time.Duration(300+(rand.Int63()%300)) * time.Millisecond
 	for !rf.killed() {
 		// Your code here (2A)
 		// Check if a leader election should be started.
@@ -353,9 +353,9 @@ func (rf *Raft) ticker() {
 		case lead: // do nothing if leading
 		case time.Since(heardOrVoted) > timeout:
 			go rf.election(term)
-			timeout = time.Duration(200+(rand.Int63()%3000)) * time.Millisecond
+			timeout = time.Duration(300+(rand.Int63()%300)) * time.Millisecond
 		}
-		time.Sleep(time.Duration(20) * time.Millisecond)
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
