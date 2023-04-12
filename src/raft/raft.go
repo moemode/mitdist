@@ -169,14 +169,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = rf.vote(args)
 	if reply.VoteGranted {
 		log.Printf("%v granted vote to %v in term %v", rf.me, args.CandidateId, rf.currentTerm)
-		rf.votedFor = args.CandidateId
-		rf.heardOrVotedAt = time.Now()
 	}
 }
 
 func (rf *Raft) vote(args *RequestVoteArgs) bool {
+	if rf.currentTerm > args.Term {
+		log.Fatalf("vote must never be called on request with lower term")
+	}
 	voteAvailable := rf.votedFor == -1 || rf.votedFor == args.CandidateId
-	return voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
+	v := voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
+	if v {
+		rf.votedFor = args.CandidateId
+		rf.heardOrVotedAt = time.Now()
+	}
+	return v
 }
 
 func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
