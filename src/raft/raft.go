@@ -71,6 +71,7 @@ type Raft struct {
 	log                       []LogEntry
 	lastLogTerm, lastLogIndex int
 	heardOrVotedAt            time.Time
+	lead                      bool
 }
 
 // return currentTerm and whether this server
@@ -181,6 +182,22 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
+func (rf *Raft) requestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.sendRequestVote(server, args, reply)
+	if ok {
+		rf.mu.Lock()
+		rf.followIfLarger(reply.Term)
+		rf.mu.Unlock()
+	}
+	return ok
+}
+
+func (rf *Raft) followIfLarger(newTerm int) {
+	if newTerm > rf.currentTerm {
+		rf.currentTerm = newTerm
+		rf.votedFor = -1
+	}
+}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -231,33 +248,84 @@ func (rf *Raft) majority() int64 {
 	return (rf.nPeers() / 2) + 1
 }
 
-func (rf *Raft) election() {
+// Run an election for term. If term has passed do nothing.
+func (rf *Raft) election(term int) {
+	rf.mu.Lock()
 	log.Printf("[REPLICA %v] Starting Election", rf.me)
+	if term != rf.currentTerm || rf.votedFor != -1 {
+		rf.mu.Unlock()
+		return
+	}
+	// term is current and have not voted for anyone
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+	rf.heardOrVotedAt = time.Now()
+	args := RequestVoteArgs{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: rf.lastLogIndex,
+		LastLogTerm:  rf.lastLogTerm,
+	}
+	me := rf.me
+	rf.mu.Unlock()
+	elected := rf.gatherVotes(&args, me)
+	//REAQUIRE: check if still same term
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentTerm == term && elected {
+		log.Printf("[REPLICA %v] I AM LEADER", rf.me)
+		rf.lead = true
+	}
+}
+
+func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
+	count := 0
+	finished := 0
+	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	for i := 0; i < int(rf.nPeers()); i++ {
+		if i == me {
+			continue
+		}
+		go func(i int, args *RequestVoteArgs) {
+			var reply RequestVoteReply
+			ok := rf.sendRequestVote(i, args, &reply)
+			mu.Lock()
+			defer mu.Unlock()
+			if ok && reply.VoteGranted {
+				count++
+			}
+			finished++
+			cond.Broadcast()
+		}(i, args)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for count < int(rf.majority()) && finished != int(rf.nPeers()) {
+		cond.Wait()
+	}
+	return count >= int(rf.majority())
 }
 
 func (rf *Raft) ticker() {
+	timeout := time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
 	for !rf.killed() {
-
 		// Your code here (2A)
 		// Check if a leader election should be started.
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		started := time.Now()
-		timeout := time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
-	loop:
-		for !rf.killed() {
-			rf.mu.Lock()
-			heardOrVoted := rf.heardOrVotedAt
-			rf.mu.Unlock()
-			switch {
-			case time.Since(heardOrVoted) > timeout:
-				rf.election()
-			case time.Since(started) > timeout:
-				break loop
-			default:
-				time.Sleep(time.Duration(10) * time.Millisecond)
-			}
+		rf.mu.Lock()
+		heardOrVoted := rf.heardOrVotedAt
+		term := rf.currentTerm
+		lead := rf.lead
+		rf.mu.Unlock()
+		switch {
+		case lead: // do nothing if leading
+		case time.Since(heardOrVoted) > timeout:
+			go rf.election(term)
+			timeout = time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
 		}
+		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 }
 
@@ -285,6 +353,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastLogTerm = -1
 	rf.lastLogIndex = -1
 	rf.heardOrVotedAt = time.Now()
+	rf.lead = false
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
