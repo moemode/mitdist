@@ -149,6 +149,29 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	rf.followIfLarger(args.Term)
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = rf.vote(args)
+	if reply.VoteGranted {
+		rf.votedFor = args.CandidateId
+		rf.heardOrVotedAt = time.Now()
+	}
+}
+
+func (rf *Raft) vote(args *RequestVoteArgs) bool {
+	voteAvailable := rf.votedFor == -1 || rf.votedFor == args.CandidateId
+	return voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
+}
+
+func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
+	return (lastTerm >= rf.lastLogTerm) || (lastTerm == rf.lastLogTerm && lastIndex >= rf.lastLogIndex)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -250,9 +273,10 @@ func (rf *Raft) majority() int64 {
 
 // Run an election for term. If term has passed do nothing.
 func (rf *Raft) election(term int) {
-	rf.mu.Lock()
 	log.Printf("[REPLICA %v] Starting Election", rf.me)
+	rf.mu.Lock()
 	if term != rf.currentTerm || rf.votedFor != -1 {
+		log.Printf("[REPLICA %v] Immediately Aborting Election", rf.me)
 		rf.mu.Unlock()
 		return
 	}
@@ -323,9 +347,9 @@ func (rf *Raft) ticker() {
 		case lead: // do nothing if leading
 		case time.Since(heardOrVoted) > timeout:
 			go rf.election(term)
-			timeout = time.Duration(50+(rand.Int63()%2000)) * time.Millisecond
+			timeout = time.Duration(200+(rand.Int63()%2000)) * time.Millisecond
 		}
-		time.Sleep(time.Duration(10) * time.Millisecond)
+		time.Sleep(time.Duration(100) * time.Millisecond)
 	}
 }
 
