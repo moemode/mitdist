@@ -192,8 +192,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if !outdated {
 		rf.heardOrVotedAt = time.Now()
 	}
-	reply.Success = !outdated && rf.logMatches(args.PrevLogIndex, args.PrevLogTerm)
-	// new rules
+	reply.Success = !outdated && rf.entryHasTerm(args.PrevLogIndex, args.PrevLogTerm)
 	if reply.Success {
 		rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
 		if args.LeaderCommitIndex > rf.commitIndex {
@@ -202,7 +201,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
-func (rf *Raft) logMatches(idx, term int) bool {
+func (rf *Raft) entryHasTerm(idx, term int) bool {
 	if idx >= len(rf.log) {
 		return false
 	}
@@ -340,7 +339,12 @@ func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	rf.log = append(rf.log[start:], entries...)
+	for i, e := range entries {
+		if !rf.entryHasTerm(e.Index, e.Term) {
+			rf.log = append(rf.log[:e.Index], entries[i:]...)
+			break
+		}
+	}
 	rf.lastLogIndex = len(rf.log) - 1
 	rf.lastLogTerm = rf.log[rf.lastLogIndex].Term
 }
