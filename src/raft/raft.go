@@ -188,7 +188,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// become follower if there is new leader with term at least our current term
 	// this is a special case, the two terms can be equal
 	if rf.state == CANDIDATE && rf.currentTerm <= args.Term {
-		rf.follow(args.Term)
+		// BUG cannot reset votedfor here
+		rf.state = FOLLOWER
 	}
 	// become follower if leader term is larger
 	rf.followIfLarger(args.Term)
