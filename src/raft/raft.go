@@ -307,12 +307,22 @@ func (rf *Raft) follow(newTerm int) {
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state == LEADER {
+		rf.appendEntry(command)
+		index = rf.lastLogIndex
+	}
+	return index, rf.currentTerm, rf.state == LEADER
+}
 
-	// Your code here (2B).
-
-	return index, term, isLeader
+func (rf *Raft) appendEntry(command interface{}) {
+	rf.lastLogIndex = len(rf.log)
+	rf.log = append(rf.log, LogEntry{
+		Index:   rf.lastLogIndex,
+		Term:    rf.currentTerm,
+		Command: command,
+	})
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
