@@ -605,6 +605,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.lead()
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	// start apply loop which keeps applying commited log entries
+	go rf.apply()
 
 	return rf
 }
