@@ -81,6 +81,9 @@ type Raft struct {
 	lastLogTerm, lastLogIndex int
 	heardOrVotedAt            time.Time
 	state                     State
+	// state for log replication
+	commitIndex, lastApplied int
+	nextIndex, matchIndex    []int
 }
 
 // return currentTerm and whether this server
@@ -345,6 +348,7 @@ func (rf *Raft) lead() {
 		state := rf.state
 		term := rf.currentTerm
 		rf.mu.Unlock()
+		// TODO: send appendentries immediately after becoming leader
 		if state == LEADER {
 			args := AppendEntriesArgs{
 				Term: term,
@@ -465,10 +469,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 1)
-	rf.lastLogTerm = -1
+	rf.lastLogTerm = 0
 	rf.lastLogIndex = -1
 	rf.heardOrVotedAt = time.Now()
 	rf.state = FOLLOWER
+
+	rf.commitIndex = -1
+	rf.lastApplied = -1
+	rf.nextIndex = make([]int, rf.peersCount)
+	rf.matchIndex = make([]int, rf.peersCount)
 	log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
