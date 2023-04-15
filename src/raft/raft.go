@@ -180,34 +180,26 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
-	}
-	// become follower if there is new leader with term at least our current term
-	// this is a special case, the two terms can be equal
-	if rf.state == CANDIDATE && rf.currentTerm <= args.Term {
-		// BUG cannot reset votedfor here
-		rf.state = FOLLOWER
-	}
 	// become follower if leader term is larger
 	rf.handleHigherTerm(args.Term)
-	if args.Term == rf.currentTerm {
-		rf.heardOrVotedAt = time.Now()
+	// if leader has higher term, we are follower already
+	// in special case of being CANDIDATE, we become follower even if the leader term is equal (and not higher)
+	if rf.state == CANDIDATE && rf.currentTerm == args.Term {
+		rf.state = FOLLOWER
 	}
 	reply.Term = rf.currentTerm
+	outdated := args.Term < rf.currentTerm
+	if !outdated {
+		rf.heardOrVotedAt = time.Now()
+	}
+	reply.Success = !outdated && rf.logMatches(args.PrevLogIndex, args.PrevLogTerm)
 	// new rules
-	if !rf.logMatches(args.PrevLogIndex, args.PrevLogTerm) {
-		reply.Success = false
-		return
+	if reply.Success {
+		rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
+		if args.LeaderCommitIndex > rf.commitIndex {
+			rf.commitIndex = min(args.LeaderCommitIndex, rf.lastLogIndex)
+		}
 	}
-	rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
-	if args.LeaderCommitIndex > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommitIndex, rf.lastLogIndex)
-	}
-	// if our term was smaller or equal to args.Term initially, then it has been set to args.Term by now
-	reply.Success = true
 }
 
 func (rf *Raft) logMatches(idx, term int) bool {
