@@ -28,7 +28,15 @@ import (
 
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
+	"golang.org/x/exp/constraints"
 )
+
+func min[T constraints.Ordered](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -158,7 +166,10 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
-	Term int
+	Term, LeaderId            int
+	PrevLogIndex, PrevLogTerm int
+	Entries                   []LogEntry
+	LeaderCommitIndex         int
 }
 
 type AppendEntriesReply struct {
@@ -169,24 +180,40 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// become follower if there is new leader with term at least our current term
-	// this is a special case, the two terms can be equal
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
+	// become follower if there is new leader with term at least our current term
+	// this is a special case, the two terms can be equal
 	if rf.state == CANDIDATE && rf.currentTerm <= args.Term {
 		rf.follow(args.Term)
 	}
 	// become follower if leader term is larger
 	rf.followIfLarger(args.Term)
-	reply.Term = rf.currentTerm
-	// if our term was smaller or equal to args.Term initially, then it has been set to args.Term by now
-	reply.Success = args.Term == rf.currentTerm
 	if args.Term == rf.currentTerm {
 		rf.heardOrVotedAt = time.Now()
 	}
+	reply.Term = rf.currentTerm
+	// new rules
+	if !rf.logMatches(args.PrevLogIndex, args.PrevLogTerm) {
+		reply.Success = false
+		return
+	}
+	rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
+	if args.LeaderCommitIndex > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommitIndex, rf.lastLogIndex)
+	}
+	// if our term was smaller or equal to args.Term initially, then it has been set to args.Term by now
+	reply.Success = true
+}
+
+func (rf *Raft) logMatches(idx, term int) bool {
+	if idx >= len(rf.log) {
+		return false
+	}
+	return rf.log[idx].Term == term
 }
 
 // example RequestVote RPC handler.
@@ -310,19 +337,28 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state == LEADER {
-		rf.appendEntry(command)
+		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex
 	}
 	return index, rf.currentTerm, rf.state == LEADER
 }
 
-func (rf *Raft) appendEntry(command interface{}) {
+func (rf *Raft) appendEntryLocal(command interface{}) {
 	rf.lastLogIndex = len(rf.log)
 	rf.log = append(rf.log, LogEntry{
 		Index:   rf.lastLogIndex,
 		Term:    rf.currentTerm,
 		Command: command,
 	})
+}
+
+func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	rf.log = append(rf.log[start:], entries...)
+	rf.lastLogIndex = len(rf.log) - 1
+	rf.lastLogTerm = rf.log[rf.lastLogIndex].Term
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
