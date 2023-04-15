@@ -97,7 +97,9 @@ type Raft struct {
 	state                     State
 	// state for log replication
 	commitIndex, lastApplied int
+	commitIndexChanged       *sync.Cond
 	nextIndex, matchIndex    []int
+	applyCh                  chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -454,6 +456,28 @@ func (rf *Raft) lead() {
 	}
 }
 
+func (rf *Raft) apply() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.lastApplied == rf.commitIndex {
+			rf.commitIndexChanged.Wait()
+		}
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied++
+			rf.applyCh <- ApplyMsg{
+				CommandValid:  true,
+				Command:       rf.log[rf.lastApplied].Command,
+				CommandIndex:  rf.log[rf.lastApplied].Index,
+				SnapshotValid: false,
+				Snapshot:      []byte{},
+				SnapshotTerm:  0,
+				SnapshotIndex: 0,
+			}
+		}
+		rf.mu.Unlock()
+	}
+}
+
 // Run an election for term. If term has passed do nothing.
 func (rf *Raft) election() {
 	log.Printf("[REPLICA %v] Starting Election", rf.me)
@@ -572,6 +596,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = -1
 	rf.nextIndex = make([]int, rf.peersCount)
 	rf.matchIndex = make([]int, rf.peersCount)
+	rf.commitIndexChanged = sync.NewCond(&rf.mu)
+	rf.applyCh = applyCh
 	log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
