@@ -192,7 +192,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = FOLLOWER
 	}
 	// become follower if leader term is larger
-	rf.followIfLarger(args.Term)
+	rf.handleHigherTerm(args.Term)
 	if args.Term == rf.currentTerm {
 		rf.heardOrVotedAt = time.Now()
 	}
@@ -222,14 +222,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.followIfLarger(args.Term)
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-		return
-	}
+	rf.handleHigherTerm(args.Term)
 	reply.Term = rf.currentTerm
-	reply.VoteGranted = rf.vote(args)
+	reply.VoteGranted = (args.Term >= rf.currentTerm) && rf.vote(args)
 	if reply.VoteGranted {
 		log.Printf("%v granted vote to %v in term %v", rf.me, args.CandidateId, rf.currentTerm)
 	}
@@ -287,7 +282,7 @@ func (rf *Raft) requestVote(server int, args *RequestVoteArgs, reply *RequestVot
 	ok := rf.sendRequestVote(server, args, reply)
 	if ok {
 		rf.mu.Lock()
-		rf.followIfLarger(reply.Term)
+		rf.handleHigherTerm(reply.Term)
 		rf.mu.Unlock()
 	}
 	return ok
@@ -303,22 +298,18 @@ func (rf *Raft) appendEntries(server int, args *AppendEntriesArgs) bool {
 	ok := rf.sendAppendEntries(server, args, &reply)
 	if ok {
 		rf.mu.Lock()
-		rf.followIfLarger(reply.Term)
+		rf.handleHigherTerm(reply.Term)
 		rf.mu.Unlock()
 	}
 	return ok
 }
 
-func (rf *Raft) followIfLarger(newTerm int) {
+func (rf *Raft) handleHigherTerm(newTerm int) {
 	if newTerm > rf.currentTerm {
-		rf.follow(newTerm)
+		rf.currentTerm = newTerm
+		rf.votedFor = -1
+		rf.state = FOLLOWER
 	}
-}
-
-func (rf *Raft) follow(newTerm int) {
-	rf.currentTerm = newTerm
-	rf.votedFor = -1
-	rf.state = FOLLOWER
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
