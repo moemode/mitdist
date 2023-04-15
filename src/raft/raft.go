@@ -208,6 +208,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) entryHasTerm(idx, term int) bool {
+	if idx == -1 {
+		return true
+	}
 	if idx >= len(rf.log) {
 		return false
 	}
@@ -290,6 +293,39 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) appendMissingEntries(term, server int) {
+	rf.mu.Lock()
+	if rf.state != LEADER || rf.currentTerm != term {
+		rf.mu.Unlock()
+		return
+	}
+	prevIdx, prevLogTerm, missing := rf.missingEntriesForServer(server)
+	args := AppendEntriesArgs{
+		Term:              term,
+		LeaderId:          rf.me,
+		PrevLogIndex:      prevIdx,
+		PrevLogTerm:       prevLogTerm,
+		Entries:           missing,
+		LeaderCommitIndex: rf.commitIndex,
+	}
+	rf.mu.Unlock()
+	rf.appendEntries(server, &args)
+}
+
+func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
+	prevIndex := rf.nextIndex[server] - 1
+	prevLogTerm := 0
+	missing := []LogEntry(nil)
+	if prevIndex >= 0 {
+		prevLogTerm = rf.log[prevIndex].Term
+	}
+	nextIdx := rf.nextIndex[server]
+	if rf.lastLogIndex >= nextIdx {
+		missing = append([]LogEntry(nil), rf.log[nextIdx:]...)
+	}
+	return prevIndex, prevLogTerm, missing
+}
+
 func (rf *Raft) appendEntries(server int, args *AppendEntriesArgs) bool {
 	var reply AppendEntriesReply
 	ok := rf.sendAppendEntries(server, args, &reply)
@@ -310,7 +346,7 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 		rf.nextIndex[server] += len(args.Entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
-		rf.nextIndex[server]--
+		rf.nextIndex[server] = rf.nextIndex[server] - 1
 	}
 
 }
@@ -348,6 +384,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) appendEntryLocal(command interface{}) {
 	rf.lastLogIndex = len(rf.log)
+	rf.lastLogTerm = rf.currentTerm
 	rf.log = append(rf.log, LogEntry{
 		Index:   rf.lastLogIndex,
 		Term:    rf.currentTerm,
@@ -401,19 +438,16 @@ func (rf *Raft) lead() {
 		rf.mu.Lock()
 		state := rf.state
 		term := rf.currentTerm
+		//nextIndex := append([]int(nil), rf.nextIndex...)
+		//matchIndex := append([]int(nil), rf.matchIndex...)
 		rf.mu.Unlock()
 		// TODO: send appendentries immediately after becoming leader
 		if state == LEADER {
-			args := AppendEntriesArgs{
-				Term: term,
-			}
 			for i := 0; i < int(rf.nPeers()); i++ {
 				if i == rf.me {
 					continue
 				}
-				go func(server int, args AppendEntriesArgs) {
-					rf.appendEntries(server, &args)
-				}(i, args)
+				go rf.appendMissingEntries(term, i)
 			}
 		}
 		time.Sleep(110 * time.Millisecond)
