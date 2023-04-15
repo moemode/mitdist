@@ -294,11 +294,25 @@ func (rf *Raft) appendEntries(server int, args *AppendEntriesArgs) bool {
 	var reply AppendEntriesReply
 	ok := rf.sendAppendEntries(server, args, &reply)
 	if ok {
-		rf.mu.Lock()
-		rf.handleHigherTerm(reply.Term)
-		rf.mu.Unlock()
+		rf.handleAppendReply(server, args, &reply)
 	}
 	return ok
+}
+
+func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.handleHigherTerm(reply.Term)
+	if rf.state != LEADER {
+		return
+	}
+	if reply.Success {
+		rf.nextIndex[server] += len(args.Entries)
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
+	} else {
+		rf.nextIndex[server]--
+	}
+
 }
 
 func (rf *Raft) handleHigherTerm(newTerm int) {
