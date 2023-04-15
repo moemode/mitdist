@@ -38,6 +38,12 @@ func min[T constraints.Ordered](a, b T) T {
 	return b
 }
 
+func setAll(s []int, v int) {
+	for i := range s {
+		s[i] = v
+	}
+}
+
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -427,8 +433,14 @@ func (rf *Raft) election() {
 	log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
 		log.Printf("[REPLICA %v] I AM LEADER\n", rf.me)
-		rf.state = LEADER
+		rf.becomeLeader()
 	}
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.state = LEADER
+	setAll(rf.nextIndex, rf.lastLogIndex+1)
+	setAll(rf.matchIndex, 0)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
