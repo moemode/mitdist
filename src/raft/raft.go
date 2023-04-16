@@ -238,9 +238,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) vote(args *RequestVoteArgs) bool {
-	if rf.currentTerm > args.Term {
-		log.Fatalf("vote must never be called on request with lower term")
-	}
 	voteAvailable := rf.votedFor == -1 || rf.votedFor == args.CandidateId
 	v := voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
 	if v {
@@ -308,8 +305,7 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 	}
 	prevIdx, prevLogTerm, missing := rf.missingEntriesForServer(server)
 	if len(missing) > 0 {
-		log.Printf("appendMissing %v, %v, %v\n", prevIdx, prevLogTerm, len(missing))
-
+		//log.Printf("appendMissing %v, %v, %v\n", prevIdx, prevLogTerm, len(missing))
 	}
 	args := AppendEntriesArgs{
 		Term:              term,
@@ -354,7 +350,7 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 		return
 	}
 	if reply.Success {
-		log.Printf("Append response success")
+		//log.Printf("Append response success")
 		rf.nextIndex[server] += len(args.Entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
@@ -387,11 +383,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state == LEADER {
-		log.Printf("[LEADER] start called")
+		//log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex
 	}
-	return index, rf.currentTerm, rf.state == LEADER
+	return index + 1, rf.currentTerm, rf.state == LEADER
 }
 
 func (rf *Raft) appendEntryLocal(command interface{}) {
@@ -456,7 +452,7 @@ func (rf *Raft) lead() {
 		rf.mu.Unlock()
 		// TODO: send appendentries immediately after becoming leader
 		if state == LEADER {
-			log.Printf("matchI: %v, nextI:%v, commitI: %v\n", rf.matchIndex, rf.nextIndex, rf.commitIndex)
+			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			for i := 0; i < int(rf.nPeers()); i++ {
 				if i == rf.me {
 					continue
@@ -511,11 +507,13 @@ func (rf *Raft) apply() {
 		}
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
-			log.Printf("Apply %v\n", rf.lastApplied)
+			if rf.state == LEADER {
+				log.Printf("Apply %v\n", rf.lastApplied)
+			}
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  true,
 				Command:       rf.log[rf.lastApplied].Command,
-				CommandIndex:  rf.log[rf.lastApplied].Index,
+				CommandIndex:  rf.log[rf.lastApplied].Index + 1,
 				SnapshotValid: false,
 				Snapshot:      []byte{},
 				SnapshotTerm:  0,
@@ -552,7 +550,7 @@ func (rf *Raft) election() {
 	defer rf.mu.Unlock()
 	//log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
-		log.Printf("[REPLICA %v] I AM LEADER\n", rf.me)
+		log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 		rf.becomeLeader()
 	}
 }

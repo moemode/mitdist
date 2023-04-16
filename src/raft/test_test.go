@@ -140,7 +140,8 @@ func TestBasicAgree2B(t *testing.T) {
 		}
 
 		xindex := cfg.one(index*100, servers, false)
-		if xindex+1 != index {
+		//changed tester
+		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		}
 	}
