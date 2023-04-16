@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -232,9 +231,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = (args.Term >= rf.currentTerm) && rf.vote(args)
 	/*if reply.VoteGranted {
-		log.Printf("%v granted vote to %v in term %v", rf.me, args.CandidateId, rf.currentTerm)
-	}
-	*/
+		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLogIndex, rf.lastLogTerm, args.LastLogIndex, args.LastLogTerm)
+	}*/
 }
 
 func (rf *Raft) vote(args *RequestVoteArgs) bool {
@@ -248,7 +246,7 @@ func (rf *Raft) vote(args *RequestVoteArgs) bool {
 }
 
 func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
-	return (lastTerm >= rf.lastLogTerm) || (lastTerm == rf.lastLogTerm && lastIndex >= rf.lastLogIndex)
+	return (lastTerm > rf.lastLogTerm) || (lastTerm == rf.lastLogTerm && lastIndex >= rf.lastLogIndex)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -452,7 +450,7 @@ func (rf *Raft) lead() {
 		rf.mu.Unlock()
 		// TODO: send appendentries immediately after becoming leader
 		if state == LEADER {
-			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
+			//log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			for i := 0; i < int(rf.nPeers()); i++ {
 				if i == rf.me {
 					continue
@@ -508,7 +506,7 @@ func (rf *Raft) apply() {
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
 			if rf.state == LEADER {
-				log.Printf("Apply %v\n", rf.lastApplied)
+				//log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.log[rf.lastApplied].Index+1)
 			}
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  true,
@@ -550,7 +548,7 @@ func (rf *Raft) election() {
 	defer rf.mu.Unlock()
 	//log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
-		log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
+		//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 		rf.becomeLeader()
 	}
 }
