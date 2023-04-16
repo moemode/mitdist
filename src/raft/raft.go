@@ -391,6 +391,7 @@ func (rf *Raft) appendEntryLocal(command interface{}) {
 		Term:    rf.currentTerm,
 		Command: command,
 	})
+	rf.matchIndex[rf.me] = rf.lastLogIndex
 }
 
 func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
@@ -456,14 +457,16 @@ func (rf *Raft) lead() {
 }
 
 func (rf *Raft) advanceCommitIndex() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if rf.state != LEADER || rf.commitIndex == len(rf.log)-1 {
-		return
-	}
-	l := rf.largestOnMajority()
-	if rf.log[l].Term == rf.currentTerm {
-		rf.commitIndex = l
+	for !rf.killed() {
+		rf.mu.Lock()
+		if rf.state == LEADER || rf.commitIndex != len(rf.log)-1 {
+			l := rf.largestOnMajority()
+			if rf.log[l].Term == rf.currentTerm {
+				rf.commitIndex = l
+			}
+		}
+		rf.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -544,6 +547,7 @@ func (rf *Raft) becomeLeader() {
 	rf.state = LEADER
 	setAll(rf.nextIndex, rf.lastLogIndex+1)
 	setAll(rf.matchIndex, 0)
+	rf.matchIndex[rf.me] = len(rf.log) - 1
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
@@ -638,6 +642,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 	// start apply loop which keeps applying commited log entries
 	go rf.apply()
+	// keep advancing commitIndex when entries are on majority of followers
+	go rf.advanceCommitIndex()
 
 	return rf
 }
