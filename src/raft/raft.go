@@ -295,6 +295,15 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) appendMissingEntriesOnAll(term int) {
+	for i := 0; i < int(rf.nPeers()); i++ {
+		if i == rf.me {
+			continue
+		}
+		go rf.appendMissingEntries(term, i)
+	}
+}
+
 func (rf *Raft) appendMissingEntries(term, server int) {
 	rf.mu.Lock()
 	if rf.state != LEADER || rf.currentTerm != term {
@@ -443,21 +452,14 @@ func (rf *Raft) majority() int64 {
 func (rf *Raft) lead() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		state := rf.state
-		term := rf.currentTerm
 		//nextIndex := append([]int(nil), rf.nextIndex...)
 		//matchIndex := append([]int(nil), rf.matchIndex...)
-		rf.mu.Unlock()
 		// TODO: send appendentries immediately after becoming leader
-		if state == LEADER {
+		if rf.state == LEADER {
 			//log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
-			for i := 0; i < int(rf.nPeers()); i++ {
-				if i == rf.me {
-					continue
-				}
-				go rf.appendMissingEntries(term, i)
-			}
+			rf.appendMissingEntriesOnAll(rf.currentTerm)
 		}
+		rf.mu.Unlock()
 		time.Sleep(110 * time.Millisecond)
 	}
 }
@@ -545,12 +547,12 @@ func (rf *Raft) election() {
 	// or received appendEntries with same term (term would not have been increased, but impossible to receive majority in same term,
 	// ergo elected is false in this case
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	//log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
 		//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 		rf.becomeLeader()
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) becomeLeader() {
@@ -558,6 +560,7 @@ func (rf *Raft) becomeLeader() {
 	setAll(rf.nextIndex, rf.lastLogIndex+1)
 	setAll(rf.matchIndex, -1)
 	rf.matchIndex[rf.me] = len(rf.log) - 1
+	rf.appendMissingEntriesOnAll(rf.currentTerm)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
