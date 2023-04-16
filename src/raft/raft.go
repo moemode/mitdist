@@ -341,7 +341,7 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.handleHigherTerm(reply.Term)
-	if rf.state != LEADER {
+	if rf.state != LEADER || rf.currentTerm != args.Term {
 		return
 	}
 	if reply.Success {
@@ -350,7 +350,6 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 	} else {
 		rf.nextIndex[server] = rf.nextIndex[server] - 1
 	}
-
 }
 
 func (rf *Raft) handleHigherTerm(newTerm int) {
@@ -454,6 +453,38 @@ func (rf *Raft) lead() {
 		}
 		time.Sleep(110 * time.Millisecond)
 	}
+}
+
+func (rf *Raft) advanceCommitIndex() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != LEADER || rf.commitIndex == len(rf.log)-1 {
+		return
+	}
+	l := rf.largestOnMajority()
+	if rf.log[l].Term == rf.currentTerm {
+		rf.commitIndex = l
+	}
+}
+
+func (rf *Raft) largestOnMajority() int {
+	smallestUncommited := rf.commitIndex + 1
+	for ; smallestUncommited < len(rf.log); smallestUncommited++ {
+		if rf.nReplicated(smallestUncommited) < int(rf.majority()) {
+			return smallestUncommited - 1
+		}
+	}
+	return len(rf.log) - 1
+}
+
+func (rf *Raft) nReplicated(index int) int {
+	count := 0
+	for _, matchIndex := range rf.matchIndex {
+		if matchIndex >= index {
+			count++
+		}
+	}
+	return count
 }
 
 func (rf *Raft) apply() {
