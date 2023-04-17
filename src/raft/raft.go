@@ -179,9 +179,19 @@ type AppendEntriesArgs struct {
 	LeaderCommitIndex         int
 }
 
+type LogInfo struct {
+	// term in the conflicting entry (if any)
+	Term int
+	// index of first entry with that term (if any)
+	Index int
+	// log lenght
+	Len int
+}
+
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	LogInfo LogInfo
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -199,7 +209,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if !outdated {
 		rf.heardOrVotedAt = time.Now()
 	}
-	reply.Success = !outdated && rf.entryHasTerm(args.PrevLogIndex, args.PrevLogTerm)
+	logmatch := rf.entryHasTerm(args.PrevLogIndex, args.PrevLogTerm)
+	if !logmatch {
+		reply.LogInfo = rf.logInfo(args.PrevLogIndex, args.PrevLogTerm)
+	}
+	reply.Success = !outdated && logmatch
 	if reply.Success {
 		rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
 		if args.LeaderCommitIndex > rf.commitIndex {
@@ -210,6 +224,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 	}
+}
+
+func (rf *Raft) logInfo(expectedIndex, expectedTerm int) LogInfo {
+	i := LogInfo{Term: 0, Index: -1, Len: len(rf.log)}
+	if expectedIndex < len(rf.log) {
+		i.Term = rf.log[expectedIndex].Term
+		i.Index = rf.firstWithSameTerm(expectedIndex)
+	}
+	return i
+}
+
+func (rf *Raft) firstWithSameTerm(idx int) int {
+	for ; idx >= 1 && rf.log[idx].Term == rf.log[idx-1].Term; idx-- {
+	}
+	return idx
 }
 
 func (rf *Raft) entryHasTerm(idx, term int) bool {
