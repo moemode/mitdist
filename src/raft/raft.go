@@ -133,22 +133,18 @@ func (rf *Raft) persist() {
 }
 
 // restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) bool {
+func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return false
+		rf.currentTerm = 0
+		rf.votedFor = -1
+		rf.log = make([]LogEntry, 0)
+		return
 	}
-	// Your code here (2C).
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var currentTerm, votedFor int
-	var log []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
-		return false
+	if d.Decode(&rf.currentTerm) != nil || d.Decode(&rf.votedFor) != nil || d.Decode(&rf.log) != nil {
+		log.Fatalf("s")
 	}
-	rf.currentTerm = currentTerm
-	rf.votedFor = votedFor
-	rf.log = log
-	return true
 }
 
 // the service says it has created a snapshot that has
@@ -187,7 +183,7 @@ type LogInfo struct {
 	Term int
 	// index of first entry with that term (if any)
 	Index int
-	// log lenght
+	// log length
 	Len int
 }
 
@@ -272,6 +268,7 @@ func (rf *Raft) vote(args *RequestVoteArgs) bool {
 	v := voteAvailable && rf.updatedLog(args.LastLogTerm, args.LastLogIndex)
 	if v {
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		rf.heardOrVotedAt = time.Now()
 	}
 	return v
@@ -433,6 +430,7 @@ func (rf *Raft) handleHigherTerm(newTerm int) {
 		rf.currentTerm = newTerm
 		rf.votedFor = -1
 		rf.state = FOLLOWER
+		rf.persist()
 	}
 }
 
@@ -469,6 +467,7 @@ func (rf *Raft) appendEntryLocal(command interface{}) {
 		Command: command,
 	})
 	rf.matchIndex[rf.me] = rf.lastLogIndex
+	rf.persist()
 }
 
 func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
@@ -483,6 +482,7 @@ func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
 	}
 	rf.lastLogIndex = len(rf.log) - 1
 	rf.lastLogTerm = rf.log[rf.lastLogIndex].Term
+	rf.persist()
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -593,6 +593,7 @@ func (rf *Raft) election() {
 	// term is current and have not voted for anyone
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.heardOrVotedAt = time.Now()
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -692,17 +693,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
 	// Your initialization code here (2A, 2B, 2C).
 	rf.peersCount = int64(len(rf.peers))
-	rf.currentTerm = 0
-	rf.votedFor = -1
-	rf.log = make([]LogEntry, 0)
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+	rf.lastLogIndex = len(rf.log) - 1
 	rf.lastLogTerm = 0
-	rf.lastLogIndex = -1
-	rf.heardOrVotedAt = time.Now()
-	rf.state = FOLLOWER
+	if rf.lastLogIndex >= 0 {
+		rf.lastLogTerm = rf.log[rf.lastLogIndex].Term
+	}
+	/*
+		rf.currentTerm = 0
+		rf.votedFor = -1
+		rf.log = make([]LogEntry, 0)
 
+	*/
+	rf.state = FOLLOWER
 	rf.commitIndex = -1
 	rf.lastApplied = -1
 	rf.nextIndex = make([]int, rf.peersCount)
@@ -710,8 +716,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndexChanged = sync.NewCond(&rf.mu)
 	rf.applyCh = applyCh
 	//log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.heardOrVotedAt = time.Now()
+
 	// start thread which leads if replica is leader
 	go rf.lead()
 	// start ticker goroutine to start elections
