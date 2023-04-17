@@ -387,11 +387,14 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 	}
 	if reply.Success {
 		//log.Printf("Append response success")
-		rf.nextIndex[server] += len(args.Entries)
+		// The following line lead to a bug:
+		// rf.nextIndex[server] += len(args.Entries)
+		rf.nextIndex[server] = (args.PrevLogIndex + 1) + len(args.Entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
+
 	} else {
 		switch {
-		case reply.LogInfo.Len < rf.nextIndex[server]:
+		case args.PrevLogIndex >= reply.LogInfo.Len:
 			// followers log is to short
 			rf.nextIndex[server] = reply.LogInfo.Len
 			log.Printf("log to short\n")
@@ -576,7 +579,7 @@ func (rf *Raft) apply() {
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  true,
 				Command:       rf.log[rf.lastApplied].Command,
-				CommandIndex:  rf.log[rf.lastApplied].Index + 1,
+				CommandIndex:  rf.lastApplied + 1, //rf.log[rf.lastApplied].Index + 1,
 				SnapshotValid: false,
 				Snapshot:      []byte{},
 				SnapshotTerm:  0,
