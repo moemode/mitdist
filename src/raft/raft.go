@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -390,8 +391,39 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 		rf.nextIndex[server] += len(args.Entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
-		rf.nextIndex[server] = rf.nextIndex[server] - 1
+		switch {
+		case reply.LogInfo.Len < rf.nextIndex[server]:
+			// followers log is to short
+			rf.nextIndex[server] = reply.LogInfo.Len
+			log.Printf("log to short\n")
+		default:
+			// term mismatch
+			log.Printf("[LEADER %v] Term Mismatch %v, %v - %v, %v on [%v]\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, reply.LogInfo.Index, reply.LogInfo.Term, server)
+			followerT := reply.LogInfo.Term
+			hasTerm, idx := rf.lastEntry(args.PrevLogIndex, followerT)
+			if hasTerm {
+				// leader has replica term, set to index of last entry for that term on leader
+				log.Printf("[LEADER %v] hasTerm at %v", rf.me, idx)
+				rf.nextIndex[server] = idx
+			} else {
+				// leader does not have replica term
+				rf.nextIndex[server] = reply.LogInfo.Index
+			}
+			log.Printf("[LEADER %v] rf.nextIndex[%v] = %v", rf.me, server, rf.nextIndex[server])
+		}
+		// simpler nextIndex backup
+		//rf.nextIndex[server] = rf.nextIndex[server] - 1
 	}
+}
+
+// find index of last entry in rf.log[:index+1] with term. If none exists return -1.
+func (rf *Raft) lastEntry(index, term int) (bool, int) {
+	for ; index >= 0 && rf.log[index].Term > term; index-- {
+	}
+	if index >= 0 && rf.log[index].Term == term {
+		return true, index
+	}
+	return false, -1
 }
 
 func (rf *Raft) handleHigherTerm(newTerm int) {
@@ -489,7 +521,7 @@ func (rf *Raft) lead() {
 			rf.appendMissingEntriesOnAll(rf.currentTerm)
 		}
 		rf.mu.Unlock()
-		time.Sleep(110 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
