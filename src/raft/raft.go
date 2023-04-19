@@ -112,10 +112,6 @@ type Raft struct {
 	snapshot                 []byte
 }
 
-func (rf *Raft) l2p(idx int) int {
-	return idx - rf.baseIndex
-}
-
 func (rf *Raft) lastLogIndex() int {
 	return rf.baseIndex + len(rf.log) - 1
 }
@@ -129,7 +125,19 @@ func (rf *Raft) lastLogTerm() int {
 }
 
 func (rf *Raft) logEntry(entryIndex int) LogEntry {
+	if entryIndex == rf.lastIncludedIndex {
+		return LogEntry{
+			Index:   entryIndex,
+			Term:    rf.lastIncludedIndex,
+			Command: nil,
+		}
+	}
 	return rf.log[entryIndex-rf.baseIndex]
+}
+
+func (rf *Raft) logEntries(start int) []LogEntry {
+	start = start - rf.baseIndex
+	return rf.log[start:]
 }
 
 // return currentTerm and whether this server
@@ -243,6 +251,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex < rf.lastIncludedIndex {
 		reply.SkipForwardTo = rf.baseIndex
 		reply.Success = true
+		return
 	}
 	logmatch := rf.entryHasTerm(args.PrevLogIndex, args.PrevLogTerm)
 	if !logmatch {
@@ -396,14 +405,14 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 
 func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
 	prevIndex := rf.nextIndex[server] - 1
-	prevLogTerm := 0
-	missing := []LogEntry(nil)
-	if prevIndex >= 0 {
-		prevLogTerm = rf.log[prevIndex].Term
+	if prevIndex < rf.lastIncludedIndex {
+		log.Fatalf("prevIndex < rf.lastIncludedIndex -> install snapshot")
 	}
+	prevLogTerm := rf.logEntry(prevIndex).Term
+	missing := []LogEntry(nil)
 	nextIdx := rf.nextIndex[server]
 	if rf.lastLogIndex() >= nextIdx {
-		missing = append([]LogEntry{}, rf.log[nextIdx:]...)
+		missing = append([]LogEntry{}, rf.logEntries(nextIdx)...)
 	}
 	return prevIndex, prevLogTerm, missing
 }
@@ -459,9 +468,9 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 
 // find index of last entry in rf.log[:index+1] with term. If none exists return -1.
 func (rf *Raft) lastEntry(index, term int) (bool, int) {
-	for ; index >= 0 && rf.log[index].Term > term; index-- {
+	for ; index >= rf.baseIndex && rf.logEntry(index).Term > term; index-- {
 	}
-	if index >= 0 && rf.log[index].Term == term {
+	if index >= rf.baseIndex && rf.logEntry(index).Term == term {
 		return true, index
 	}
 	return false, -1
