@@ -397,21 +397,21 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 		case args.PrevLogIndex >= reply.LogInfo.Len:
 			// followers log is to short
 			rf.nextIndex[server] = reply.LogInfo.Len
-			log.Printf("log to short\n")
+			//log.Printf("log too short\n")
 		default:
 			// term mismatch
-			log.Printf("[LEADER %v] Term Mismatch %v, %v - %v, %v on [%v]\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, reply.LogInfo.Index, reply.LogInfo.Term, server)
+			// log.Printf("[LEADER %v] Term Mismatch %v, %v - %v, %v on [%v]\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, reply.LogInfo.Index, reply.LogInfo.Term, server)
 			followerT := reply.LogInfo.Term
 			hasTerm, idx := rf.lastEntry(args.PrevLogIndex, followerT)
 			if hasTerm {
 				// leader has replica term, set to index of last entry for that term on leader
-				log.Printf("[LEADER %v] hasTerm at %v", rf.me, idx)
+				// log.Printf("[LEADER %v] hasTerm at %v", rf.me, idx)
 				rf.nextIndex[server] = idx
 			} else {
 				// leader does not have replica term
 				rf.nextIndex[server] = reply.LogInfo.Index
 			}
-			log.Printf("[LEADER %v] rf.nextIndex[%v] = %v", rf.me, server, rf.nextIndex[server])
+			// log.Printf("[LEADER %v] rf.nextIndex[%v] = %v", rf.me, server, rf.nextIndex[server])
 		}
 		// simpler nextIndex backup
 		//rf.nextIndex[server] = rf.nextIndex[server] - 1
