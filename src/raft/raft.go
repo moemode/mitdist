@@ -128,7 +128,7 @@ func (rf *Raft) logEntry(entryIndex int) LogEntry {
 	if entryIndex == rf.lastIncludedIndex {
 		return LogEntry{
 			Index:   entryIndex,
-			Term:    rf.lastIncludedIndex,
+			Term:    rf.lastIncludedTerm,
 			Command: nil,
 		}
 	}
@@ -288,7 +288,7 @@ func (rf *Raft) firstWithSameTerm(idx int) int {
 func (rf *Raft) entryHasTerm(idx, term int) bool {
 	if idx == rf.lastIncludedIndex {
 		if term != rf.lastIncludedTerm {
-			log.Printf("idx is last rf.lastIncludedIndex and term != rf.lastIncludedTerm ")
+			log.Printf("idx is last rf.lastIncludedIndex and term %v != %v rf.lastIncludedTerm ", term, rf.lastIncludedTerm)
 		}
 		return term == rf.lastIncludedTerm
 	}
@@ -405,8 +405,9 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 
 func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
 	prevIndex := rf.nextIndex[server] - 1
+	//log.Printf("%v", prevIndex)
 	if prevIndex < rf.lastIncludedIndex {
-		log.Fatalf("prevIndex < rf.lastIncludedIndex -> install snapshot")
+		log.Fatalf("prevIndex %v < %v rf.lastIncludedIndex  -> install snapshot", prevIndex, rf.lastIncludedIndex)
 	}
 	prevLogTerm := rf.logEntry(prevIndex).Term
 	missing := []LogEntry(nil)
