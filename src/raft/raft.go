@@ -197,7 +197,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// app uses 1 based numbering
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("Snapshot")
 	index = index - 1
 	if index <= rf.lastIncludedIndex {
 		log.Printf("[OUTDATED SNAPSHOT] App created snapshot with idx=%v < %v lastIncludedIndex", index, rf.lastIncludedIndex)
@@ -528,7 +527,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state == LEADER {
-		log.Printf("[LEADER] start called")
+		//log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex()
 	}
@@ -592,9 +591,7 @@ func (rf *Raft) lead() {
 		rf.mu.Lock()
 		if rf.state == LEADER {
 			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
-			log.Printf("[LEADER %v] Enter append Missing Entries", rf.me)
 			rf.appendMissingEntriesOnAll(rf.currentTerm)
-			log.Printf("[LEADER %v] Exit append Missing Entries", rf.me)
 		}
 		rf.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
@@ -645,11 +642,10 @@ func (rf *Raft) apply() {
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
 			if rf.state == LEADER {
-				log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.logEntry(rf.lastApplied).Index+1)
+				//log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.logEntry(rf.lastApplied).Index+1)
 			} else {
-				log.Printf("[FOLLOWER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
+				//log.Printf("[FOLLOWER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			}
-			log.Printf("presend in apply")
 			msg := ApplyMsg{
 				CommandValid:  true,
 				Command:       rf.logEntry(rf.lastApplied).Command,
@@ -670,7 +666,7 @@ func (rf *Raft) apply() {
 
 // Run an election for term. If term has passed do nothing.
 func (rf *Raft) election() {
-	log.Printf("[REPLICA %v] Starting Election", rf.me)
+	// log.Printf("[REPLICA %v] Starting Election", rf.me)
 	// term is current and have not voted for anyone
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
@@ -692,7 +688,7 @@ func (rf *Raft) election() {
 	// or received appendEntries with same term (term would not have been increased, but impossible to receive majority in same term,
 	// ergo elected is false in this case
 	rf.mu.Lock()
-	log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
+	//log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
 		rf.becomeLeader()
 	}
@@ -725,7 +721,7 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 			if ok && reply.VoteGranted {
 				count++
 			}
-			log.Printf("[REPLICA %v] got response from %v\n", me, i)
+			//log.Printf("[REPLICA %v] got response from %v\n", me, i)
 			finished++
 			cond.Broadcast()
 		}(i, args)
