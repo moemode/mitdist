@@ -472,7 +472,7 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 		return
 	}
 	if rf.nextIndex[server]-1 < rf.lastIncludedIndex {
-		log.Printf("[SNAPSHOT INSTALL %v->%v] prevIndex %v < %v rf.lastIncludedIndex", rf.me, server, rf.nextIndex[server]-1, rf.lastIncludedIndex)
+		//log.Printf("[SNAPSHOT INSTALL %v->%v] prevIndex %v < %v rf.lastIncludedIndex", rf.me, server, rf.nextIndex[server]-1, rf.lastIncludedIndex)
 		args := InstallSnapshotArgs{
 			Term:              rf.currentTerm,
 			LeaderId:          rf.me,
@@ -548,6 +548,12 @@ func (rf *Raft) handleAppendReply(server int, args *AppendEntriesArgs, reply *Ap
 		//log.Printf("Append response success")
 		// The following line lead to a bug:
 		// rf.nextIndex[server] += len(args.Entries)
+		/*TODO: optimize this
+		rf.nextIndex[server] = max(rf.nextIndex[server], (args.PrevLogIndex + 1) + len(args.Entries))
+		if (args.PrevLogIndex+1)+len(args.Entries) < rf.nextIndex[server] {
+			log.Println("Success in appendEntries and lowering nextIndex")
+		}
+		*/
 		rf.nextIndex[server] = (args.PrevLogIndex + 1) + len(args.Entries)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 
@@ -676,7 +682,7 @@ func (rf *Raft) lead() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		if rf.state == LEADER {
-			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
+			//log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			rf.appendMissingEntriesOnAll(rf.currentTerm)
 		}
 		rf.mu.Unlock()
@@ -797,7 +803,7 @@ func (rf *Raft) becomeLeader() {
 	setAll(rf.matchIndex, -1)
 	rf.matchIndex[rf.me] = rf.lastLogIndex()
 	rf.appendMissingEntriesOnAll(rf.currentTerm)
-	log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
+	//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
