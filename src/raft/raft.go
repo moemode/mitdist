@@ -140,6 +140,11 @@ func (rf *Raft) logEntries(start int) []LogEntry {
 	return rf.log[start:]
 }
 
+func (rf *Raft) logEntriesTo(end int) []LogEntry {
+	end = end - rf.baseIndex
+	return rf.log[:end]
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -190,8 +195,28 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	// app uses 1 based numbering
-	// internalIndex := index - 1
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	log.Printf("Snapshot")
+	index = index - 1
+	if index <= rf.lastIncludedIndex {
+		log.Printf("[OUTDATED SNAPSHOT] App created snapshot with idx=%v < %v lastIncludedIndex", index, rf.lastIncludedIndex)
+		return
+	}
+	// index > rf.lastIncludedIndex <=> index >= rf.baseIndex
+	if index > rf.commitIndex {
+		log.Fatalf("App claims to have snapshot with index %v > %v (commitIndex)", index, rf.commitIndex)
+	}
+	// rf.baseIndex <= index  <= rf.commitIndex < rf.lastLogIndex
+	nTrim := (index - rf.baseIndex) + 1
+	lastIncluded := rf.logEntry(index)
+	if lastIncluded.Index != index {
+		log.Fatalf("[SNAPSHOT] lastIncluded.index != index.")
+	}
+	rf.log = rf.log[nTrim:]
+	rf.lastIncludedIndex = lastIncluded.Index
+	rf.lastIncludedTerm = lastIncluded.Term
+	rf.baseIndex = rf.lastIncludedIndex + 1
 }
 
 // example RequestVote RPC arguments structure.
@@ -503,7 +528,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state == LEADER {
-		//log.Printf("[LEADER] start called")
+		log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex()
 	}
@@ -527,7 +552,8 @@ func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
 	}
 	for i, e := range entries {
 		if !rf.entryHasTerm(e.Index, e.Term) {
-			rf.log = append(rf.log[:e.Index], entries[i:]...)
+			//opaque - why does index oob not happen? entryHasTerm check prohibits it.
+			rf.log = append(rf.logEntriesTo(e.Index), entries[i:]...)
 			break
 		}
 	}
@@ -564,12 +590,12 @@ func (rf *Raft) majority() int64 {
 func (rf *Raft) lead() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		//nextIndex := append([]int(nil), rf.nextIndex...)
-		//matchIndex := append([]int(nil), rf.matchIndex...)
-		// TODO: send appendentries immediately after becoming leader
+		log.Printf("%v alive", rf.me)
 		if rf.state == LEADER {
-			//log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
+			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
+			log.Printf("[LEADER %v] Enter append Missing Entries", rf.me)
 			rf.appendMissingEntriesOnAll(rf.currentTerm)
+			log.Printf("[LEADER %v] Exit append Missing Entries", rf.me)
 		}
 		rf.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
@@ -579,9 +605,9 @@ func (rf *Raft) lead() {
 func (rf *Raft) advanceCommitIndex() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		if rf.state == LEADER || rf.commitIndex != len(rf.log)-1 {
+		if rf.state == LEADER || rf.commitIndex != rf.lastLogIndex() {
 			l := rf.largestOnMajority()
-			if l != -1 && l > rf.commitIndex && rf.log[l].Term == rf.currentTerm {
+			if l != rf.lastIncludedIndex && l > rf.commitIndex && rf.logEntry(l).Term == rf.currentTerm {
 				rf.commitIndex = l
 				rf.commitIndexChanged.Signal()
 			}
@@ -593,12 +619,12 @@ func (rf *Raft) advanceCommitIndex() {
 
 func (rf *Raft) largestOnMajority() int {
 	smallestUncommited := rf.commitIndex + 1
-	for ; smallestUncommited < len(rf.log); smallestUncommited++ {
+	for ; smallestUncommited <= rf.lastLogIndex(); smallestUncommited++ {
 		if rf.nReplicated(smallestUncommited) < int(rf.majority()) {
 			return smallestUncommited - 1
 		}
 	}
-	return len(rf.log) - 1
+	return rf.lastLogIndex()
 }
 
 func (rf *Raft) nReplicated(index int) int {
@@ -620,7 +646,9 @@ func (rf *Raft) apply() {
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
 			if rf.state == LEADER {
-				//log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.log[rf.lastApplied].Index+1)
+				log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.log[rf.lastApplied].Index+1)
+			} else {
+				log.Printf("[FOLLOWER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			}
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  true,
@@ -632,13 +660,14 @@ func (rf *Raft) apply() {
 				SnapshotIndex: 0,
 			}
 		}
+		log.Printf("unlock in apply")
 		rf.mu.Unlock()
 	}
 }
 
 // Run an election for term. If term has passed do nothing.
 func (rf *Raft) election() {
-	// log.Printf("[REPLICA %v] Starting Election", rf.me)
+	log.Printf("[REPLICA %v] Starting Election", rf.me)
 	// term is current and have not voted for anyone
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
@@ -660,9 +689,8 @@ func (rf *Raft) election() {
 	// or received appendEntries with same term (term would not have been increased, but impossible to receive majority in same term,
 	// ergo elected is false in this case
 	rf.mu.Lock()
-	//log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
+	log.Printf("[REPLICA %v] Gathered Votes, leader: %v, outdated: %v\n", rf.me, elected, rf.currentTerm != preGatherTerm)
 	if rf.state == CANDIDATE && rf.currentTerm == preGatherTerm && elected {
-		//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 		rf.becomeLeader()
 	}
 	rf.mu.Unlock()
@@ -672,8 +700,9 @@ func (rf *Raft) becomeLeader() {
 	rf.state = LEADER
 	setAll(rf.nextIndex, rf.lastLogIndex()+1)
 	setAll(rf.matchIndex, -1)
-	rf.matchIndex[rf.me] = len(rf.log) - 1
+	rf.matchIndex[rf.me] = rf.lastLogIndex()
 	rf.appendMissingEntriesOnAll(rf.currentTerm)
+	log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
@@ -693,7 +722,7 @@ func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
 			if ok && reply.VoteGranted {
 				count++
 			}
-			//log.Printf("[REPLICA %v] got response from %v\n", me, i)
+			log.Printf("[REPLICA %v] got response from %v\n", me, i)
 			finished++
 			cond.Broadcast()
 		}(i, args)
@@ -753,10 +782,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	*/
 	rf.state = FOLLOWER
-	rf.commitIndex = -1
-	rf.lastApplied = -1
 	rf.lastIncludedIndex = -1
 	rf.lastIncludedTerm = 0
+	rf.lastApplied = rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
 	rf.baseIndex = 0
 	rf.nextIndex = make([]int, rf.peersCount)
 	rf.matchIndex = make([]int, rf.peersCount)
