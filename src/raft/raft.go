@@ -80,8 +80,8 @@ const (
 	LEADER
 )
 
-type PersistentSnapshot struct {
-	snapshot            []byte
+type RaftSnapshot struct {
+	appSnapshot         []byte
 	lastIndex, lastTerm int
 }
 
@@ -100,15 +100,20 @@ type Raft struct {
 	currentTerm, votedFor int
 	log                   []LogEntry
 	// index of rf.log[0] if exists
-	baseIndex      int
-	heardOrVotedAt time.Time
-	state          State
+	lastIncludedIndex, lastIncludedTerm int
+	baseIndex                           int
+	heardOrVotedAt                      time.Time
+	state                               State
 	// state for log replication
 	commitIndex, lastApplied int
 	commitIndexChanged       *sync.Cond
 	nextIndex, matchIndex    []int
 	applyCh                  chan ApplyMsg
 	snapshot                 []byte
+}
+
+func (rf *Raft) l2p(idx int) int {
+	return idx - rf.baseIndex
 }
 
 func (rf *Raft) lastLogIndex() int {
@@ -121,6 +126,10 @@ func (rf *Raft) lastLogTerm() int {
 		return 0
 	}
 	return rf.log[l-1].Term
+}
+
+func (rf *Raft) logEntry(entryIndex int) LogEntry {
+	return rf.log[entryIndex-rf.baseIndex]
 }
 
 // return currentTerm and whether this server
@@ -172,6 +181,8 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	// app uses 1 based numbering
+	// internalIndex := index - 1
 
 }
 
@@ -209,7 +220,9 @@ type LogInfo struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
-	LogInfo LogInfo
+	// skip forward if Leader sends log entries which are before snapshot
+	SkipForwardTo int
+	LogInfo       LogInfo
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -226,6 +239,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	outdated := args.Term < rf.currentTerm
 	if !outdated {
 		rf.heardOrVotedAt = time.Now()
+	}
+	if args.PrevLogIndex < rf.lastIncludedIndex {
+		reply.SkipForwardTo = rf.baseIndex
+		reply.Success = true
 	}
 	logmatch := rf.entryHasTerm(args.PrevLogIndex, args.PrevLogTerm)
 	if !logmatch {
@@ -245,28 +262,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) logInfo(expectedIndex, expectedTerm int) LogInfo {
-	i := LogInfo{Term: 0, Index: -1, Len: len(rf.log)}
-	if expectedIndex < len(rf.log) {
-		i.Term = rf.log[expectedIndex].Term
+	i := LogInfo{Term: 0, Index: -1, Len: rf.lastLogIndex() + 1}
+	if expectedIndex <= rf.lastLogIndex() {
+		i.Term = rf.logEntry(expectedIndex).Term
 		i.Index = rf.firstWithSameTerm(expectedIndex)
 	}
 	return i
 }
 
 func (rf *Raft) firstWithSameTerm(idx int) int {
-	for ; idx >= 1 && rf.log[idx].Term == rf.log[idx-1].Term; idx-- {
+	for ; idx >= rf.baseIndex+1 && rf.logEntry(idx).Term == rf.logEntry(idx-1).Term; idx-- {
 	}
 	return idx
 }
 
 func (rf *Raft) entryHasTerm(idx, term int) bool {
-	if idx == -1 {
-		return true
+	if idx == rf.lastIncludedIndex {
+		if term != rf.lastIncludedTerm {
+			log.Printf("idx is last rf.lastIncludedIndex and term != rf.lastIncludedTerm ")
+		}
+		return term == rf.lastIncludedTerm
 	}
-	if idx >= len(rf.log) {
+	if idx > rf.lastLogIndex() {
 		return false
 	}
-	return rf.log[idx].Term == term
+	return rf.logEntry(idx).Term == term
 }
 
 // example RequestVote RPC handler.
@@ -725,6 +745,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.commitIndex = -1
 	rf.lastApplied = -1
+	rf.lastIncludedIndex = -1
+	rf.lastIncludedTerm = 0
 	rf.baseIndex = 0
 	rf.nextIndex = make([]int, rf.peersCount)
 	rf.matchIndex = make([]int, rf.peersCount)
