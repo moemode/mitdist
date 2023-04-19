@@ -111,11 +111,11 @@ type Raft struct {
 	snapshot                 []byte
 }
 
-func (rf *Raft) lastLIndex() int {
+func (rf *Raft) lastLogIndex() int {
 	return rf.baseIndex + len(rf.log) - 1
 }
 
-func (rf *Raft) lastLTerm() int {
+func (rf *Raft) lastLogTerm() int {
 	l := len(rf.log)
 	if l == 0 {
 		return 0
@@ -236,7 +236,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.appendEntriesLocal(args.PrevLogIndex+1, args.Entries)
 		if args.LeaderCommitIndex > rf.commitIndex {
 			old := rf.commitIndex
-			rf.commitIndex = min(args.LeaderCommitIndex, rf.lastLIndex())
+			rf.commitIndex = min(args.LeaderCommitIndex, rf.lastLogIndex())
 			if rf.commitIndex != old {
 				rf.commitIndexChanged.Signal()
 			}
@@ -294,7 +294,7 @@ func (rf *Raft) vote(args *RequestVoteArgs) bool {
 }
 
 func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
-	return (lastTerm > rf.lastLTerm()) || (lastTerm == rf.lastLTerm() && lastIndex >= rf.lastLIndex())
+	return (lastTerm > rf.lastLogTerm()) || (lastTerm == rf.lastLogTerm() && lastIndex >= rf.lastLogIndex())
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -382,7 +382,7 @@ func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
 		prevLogTerm = rf.log[prevIndex].Term
 	}
 	nextIdx := rf.nextIndex[server]
-	if rf.lastLIndex() >= nextIdx {
+	if rf.lastLogIndex() >= nextIdx {
 		missing = append([]LogEntry{}, rf.log[nextIdx:]...)
 	}
 	return prevIndex, prevLogTerm, missing
@@ -475,13 +475,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state == LEADER {
 		//log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
-		index = rf.lastLIndex()
+		index = rf.lastLogIndex()
 	}
 	return index + 1, rf.currentTerm, rf.state == LEADER
 }
 
 func (rf *Raft) appendEntryLocal(command interface{}) {
-	nextIndex := rf.lastLIndex() + 1
+	nextIndex := rf.lastLogIndex() + 1
 	rf.log = append(rf.log, LogEntry{
 		Index:   nextIndex,
 		Term:    rf.currentTerm,
@@ -617,8 +617,8 @@ func (rf *Raft) election() {
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: rf.lastLIndex(),
-		LastLogTerm:  rf.lastLTerm(),
+		LastLogIndex: rf.lastLogIndex(),
+		LastLogTerm:  rf.lastLogTerm(),
 	}
 	me := rf.me
 	preGatherTerm := rf.currentTerm
@@ -640,7 +640,7 @@ func (rf *Raft) election() {
 
 func (rf *Raft) becomeLeader() {
 	rf.state = LEADER
-	setAll(rf.nextIndex, rf.lastLIndex()+1)
+	setAll(rf.nextIndex, rf.lastLogIndex()+1)
 	setAll(rf.matchIndex, -1)
 	rf.matchIndex[rf.me] = len(rf.log) - 1
 	rf.appendMissingEntriesOnAll(rf.currentTerm)
