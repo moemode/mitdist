@@ -264,6 +264,16 @@ type AppendEntriesReply struct {
 	LogInfo       LogInfo
 }
 
+type InstallSnapshotArgs struct {
+	Term, LeaderId                      int
+	LastIncludedIndex, LastIncludedTerm int
+	Snapshot                            []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -403,6 +413,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
 func (rf *Raft) appendMissingEntriesOnAll(term int) {
 	for i := 0; i < int(rf.nPeers()); i++ {
 		if i == rf.me {
@@ -416,6 +431,19 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 	rf.mu.Lock()
 	if rf.state != LEADER || rf.currentTerm != term {
 		rf.mu.Unlock()
+		return
+	}
+	if rf.nextIndex[server]-1 < rf.lastIncludedIndex {
+		log.Fatalf("prevIndex %v < %v rf.lastIncludedIndex  -> install snapshot", rf.nextIndex[server]-1, rf.lastIncludedIndex)
+		args := InstallSnapshotArgs{
+			Term:              rf.currentTerm,
+			LeaderId:          rf.me,
+			LastIncludedIndex: rf.lastIncludedIndex,
+			LastIncludedTerm:  rf.lastIncludedTerm,
+			Snapshot:          rf.snapshot,
+		}
+		rf.mu.Unlock()
+		rf.installSnapshot(server, &args)
 		return
 	}
 	prevIdx, prevLogTerm, missing := rf.missingEntriesForServer(server)
@@ -437,9 +465,11 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
 	prevIndex := rf.nextIndex[server] - 1
 	//log.Printf("%v", prevIndex)
-	if prevIndex < rf.lastIncludedIndex {
-		log.Fatalf("prevIndex %v < %v rf.lastIncludedIndex  -> install snapshot", prevIndex, rf.lastIncludedIndex)
-	}
+	/*
+		if prevIndex < rf.lastIncludedIndex {
+			log.Fatalf("prevIndex %v < %v rf.lastIncludedIndex  -> install snapshot", prevIndex, rf.lastIncludedIndex)
+		}
+	*/
 	prevLogTerm := rf.logEntry(prevIndex).Term
 	missing := []LogEntry(nil)
 	nextIdx := rf.nextIndex[server]
@@ -447,6 +477,17 @@ func (rf *Raft) missingEntriesForServer(server int) (int, int, []LogEntry) {
 		missing = append([]LogEntry{}, rf.logEntries(nextIdx)...)
 	}
 	return prevIndex, prevLogTerm, missing
+}
+
+func (rf *Raft) installSnapshot(server int, args *InstallSnapshotArgs) bool {
+	var reply InstallSnapshotReply
+	ok := rf.sendInstallSnapshot(server, args, &reply)
+	if ok {
+		rf.mu.Lock()
+		rf.handleHigherTerm(reply.Term)
+		rf.mu.Unlock()
+	}
+	return ok
 }
 
 func (rf *Raft) appendEntries(server int, args *AppendEntriesArgs) bool {
