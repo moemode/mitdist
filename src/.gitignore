@@ -11,5 +11,6 @@ mrtmp.*
 /main/mrsequential
 /main/mrworker
 test*.txt
+test**.txt
 *.out
 2btest
