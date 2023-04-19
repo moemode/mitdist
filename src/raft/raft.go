@@ -125,11 +125,7 @@ func (rf *Raft) lastLogIndex() int {
 }
 
 func (rf *Raft) lastLogTerm() int {
-	l := len(rf.log)
-	if l == 0 {
-		return 0
-	}
-	return rf.log[l-1].Term
+	return rf.logEntry(rf.lastLogIndex()).Term
 }
 
 func (rf *Raft) logEntry(entryIndex int) LogEntry {
@@ -383,9 +379,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.handleHigherTerm(args.Term)
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = (args.Term >= rf.currentTerm) && rf.vote(args)
-	/*if reply.VoteGranted {
-		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLIndex(), rf.lastLTerm(), args.LastLogIndex, args.LastLogTerm)
-	}*/
+	if reply.VoteGranted {
+		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLogIndex(), rf.lastLogTerm(), args.LastLogIndex, args.LastLogTerm)
+	}
 }
 
 func (rf *Raft) vote(args *RequestVoteArgs) bool {
@@ -470,7 +466,7 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 		return
 	}
 	if rf.nextIndex[server]-1 < rf.lastIncludedIndex {
-		log.Printf("[SNAPSHOT INSTALL] prevIndex %v < %v rf.lastIncludedIndex", rf.nextIndex[server]-1, rf.lastIncludedIndex)
+		log.Printf("[SNAPSHOT INSTALL %v->%v] prevIndex %v < %v rf.lastIncludedIndex", rf.me, server, rf.nextIndex[server]-1, rf.lastIncludedIndex)
 		args := InstallSnapshotArgs{
 			Term:              rf.currentTerm,
 			LeaderId:          rf.me,
