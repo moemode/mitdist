@@ -590,7 +590,6 @@ func (rf *Raft) majority() int64 {
 func (rf *Raft) lead() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		log.Printf("%v alive", rf.me)
 		if rf.state == LEADER {
 			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			log.Printf("[LEADER %v] Enter append Missing Entries", rf.me)
@@ -646,21 +645,25 @@ func (rf *Raft) apply() {
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
 			if rf.state == LEADER {
-				log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.log[rf.lastApplied].Index+1)
+				log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.logEntry(rf.lastApplied).Index+1)
 			} else {
 				log.Printf("[FOLLOWER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			}
-			rf.applyCh <- ApplyMsg{
+			log.Printf("presend in apply")
+			msg := ApplyMsg{
 				CommandValid:  true,
-				Command:       rf.log[rf.lastApplied].Command,
+				Command:       rf.logEntry(rf.lastApplied).Command,
 				CommandIndex:  rf.lastApplied + 1, //rf.log[rf.lastApplied].Index + 1,
 				SnapshotValid: false,
 				Snapshot:      []byte{},
 				SnapshotTerm:  0,
 				SnapshotIndex: 0,
 			}
+			rf.mu.Unlock()
+			// can block
+			rf.applyCh <- msg
+			rf.mu.Lock()
 		}
-		log.Printf("unlock in apply")
 		rf.mu.Unlock()
 	}
 }
