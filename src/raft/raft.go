@@ -169,8 +169,10 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	rf.persister.Save(raftstate, rf.snapshot)
 }
 
 // restore previously persisted state.
@@ -179,11 +181,14 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = 0
 		rf.votedFor = -1
 		rf.log = make([]LogEntry, 0)
+		rf.lastIncludedIndex = -1
+		rf.lastIncludedTerm = 0
 		return
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	if d.Decode(&rf.currentTerm) != nil || d.Decode(&rf.votedFor) != nil || d.Decode(&rf.log) != nil {
+	if d.Decode(&rf.currentTerm) != nil || d.Decode(&rf.votedFor) != nil || d.Decode(&rf.log) != nil ||
+		d.Decode(&rf.lastIncludedIndex) != nil || d.Decode(&rf.lastIncludedTerm) != nil {
 		log.Fatalf("s")
 	}
 }
@@ -216,6 +221,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.lastIncludedIndex = lastIncluded.Index
 	rf.lastIncludedTerm = lastIncluded.Term
 	rf.baseIndex = rf.lastIncludedIndex + 1
+	rf.snapshot = snapshot
+	rf.persist()
 }
 
 // example RequestVote RPC arguments structure.
@@ -781,11 +788,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	*/
 	rf.state = FOLLOWER
-	rf.lastIncludedIndex = -1
-	rf.lastIncludedTerm = 0
 	rf.lastApplied = rf.lastIncludedIndex
 	rf.commitIndex = rf.lastIncludedIndex
-	rf.baseIndex = 0
+	rf.baseIndex = rf.lastIncludedIndex + 1
 	rf.nextIndex = make([]int, rf.peersCount)
 	rf.matchIndex = make([]int, rf.peersCount)
 	rf.commitIndexChanged = sync.NewCond(&rf.mu)
@@ -793,7 +798,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapshot = nil
 	//log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	rf.heardOrVotedAt = time.Now()
-
 	// start thread which leads if replica is leader
 	go rf.lead()
 	// start ticker goroutine to start elections
@@ -802,6 +806,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.apply()
 	// keep advancing commitIndex when entries are on majority of followers
 	go rf.advanceCommitIndex()
-
 	return rf
 }
