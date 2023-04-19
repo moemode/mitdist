@@ -40,6 +40,13 @@ func min[T constraints.Ordered](a, b T) T {
 	return b
 }
 
+func max[T constraints.Ordered](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func setAll(s []int, v int) {
 	for i := range s {
 		s[i] = v
@@ -110,6 +117,7 @@ type Raft struct {
 	nextIndex, matchIndex    []int
 	applyCh                  chan ApplyMsg
 	snapshot                 []byte
+	snapshotInstalled        bool
 }
 
 func (rf *Raft) lastLogIndex() int {
@@ -212,6 +220,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		log.Fatalf("App claims to have snapshot with index %v > %v (commitIndex)", index, rf.commitIndex)
 	}
 	// rf.baseIndex <= index  <= rf.commitIndex < rf.lastLogIndex
+	rf.trim(index)
+	rf.snapshot = snapshot
+	rf.persist()
+}
+
+// only retain log entries after index
+func (rf *Raft) trim(index int) {
 	nTrim := (index - rf.baseIndex) + 1
 	lastIncluded := rf.logEntry(index)
 	if lastIncluded.Index != index {
@@ -221,8 +236,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.lastIncludedIndex = lastIncluded.Index
 	rf.lastIncludedTerm = lastIncluded.Term
 	rf.baseIndex = rf.lastIncludedIndex + 1
-	rf.snapshot = snapshot
-	rf.persist()
 }
 
 // example RequestVote RPC arguments structure.
@@ -272,6 +285,29 @@ type InstallSnapshotArgs struct {
 
 type InstallSnapshotReply struct {
 	Term int
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.handleHigherTerm(args.Term)
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm || args.LastIncludedIndex <= rf.lastIncludedIndex {
+		return
+	}
+	rf.snapshot = args.Snapshot
+	if rf.entryHasTerm(args.LastIncludedIndex, args.LastIncludedTerm) {
+		rf.trim(args.LastIncludedIndex)
+	} else {
+		rf.log = make([]LogEntry, 0)
+		rf.lastIncludedIndex = args.LastIncludedIndex
+		rf.lastIncludedTerm = args.LastIncludedTerm
+		rf.baseIndex = rf.lastIncludedIndex + 1
+	}
+	rf.commitIndex = max(rf.commitIndex, args.LastIncludedIndex)
+	rf.commitIndexChanged.Signal()
+	rf.snapshotInstalled = true
+	rf.persist()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -434,7 +470,7 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 		return
 	}
 	if rf.nextIndex[server]-1 < rf.lastIncludedIndex {
-		log.Fatalf("prevIndex %v < %v rf.lastIncludedIndex  -> install snapshot", rf.nextIndex[server]-1, rf.lastIncludedIndex)
+		log.Printf("[SNAPSHOT INSTALL] prevIndex %v < %v rf.lastIncludedIndex", rf.nextIndex[server]-1, rf.lastIncludedIndex)
 		args := InstallSnapshotArgs{
 			Term:              rf.currentTerm,
 			LeaderId:          rf.me,
@@ -688,20 +724,28 @@ func (rf *Raft) apply() {
 			rf.commitIndexChanged.Wait()
 		}
 		for rf.lastApplied < rf.commitIndex {
-			rf.lastApplied++
 			if rf.state == LEADER {
 				//log.Printf("[LEADER %v] Apply %v\n", rf.me, rf.logEntry(rf.lastApplied).Index+1)
 			} else {
 				//log.Printf("[FOLLOWER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			}
-			msg := ApplyMsg{
-				CommandValid:  true,
-				Command:       rf.logEntry(rf.lastApplied).Command,
-				CommandIndex:  rf.lastApplied + 1, //rf.log[rf.lastApplied].Index + 1,
-				SnapshotValid: false,
-				Snapshot:      []byte{},
-				SnapshotTerm:  0,
-				SnapshotIndex: 0,
+			var msg ApplyMsg
+			if rf.snapshotInstalled {
+				rf.lastApplied = rf.lastIncludedIndex
+				rf.snapshotInstalled = false
+				msg = ApplyMsg{
+					SnapshotValid: true,
+					Snapshot:      rf.snapshot,
+					SnapshotIndex: rf.lastIncludedIndex + 1,
+					SnapshotTerm:  rf.lastIncludedTerm,
+				}
+			} else {
+				rf.lastApplied++
+				msg = ApplyMsg{
+					CommandValid: true,
+					Command:      rf.logEntry(rf.lastApplied).Command,
+					CommandIndex: rf.lastApplied + 1, //rf.log[rf.lastApplied].Index + 1,
+				}
 			}
 			rf.mu.Unlock()
 			// can block
