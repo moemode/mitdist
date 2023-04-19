@@ -96,10 +96,9 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	peersCount                int64
-	currentTerm, votedFor     int
-	log                       []LogEntry
-	lastLogTerm, lastLogIndex int
+	peersCount            int64
+	currentTerm, votedFor int
+	log                   []LogEntry
 	// index of rf.log[0] if exists
 	baseIndex      int
 	heardOrVotedAt time.Time
@@ -279,7 +278,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = (args.Term >= rf.currentTerm) && rf.vote(args)
 	/*if reply.VoteGranted {
-		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLIndex(), rf.lastLogTerm, args.LastLogIndex, args.LastLogTerm)
+		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLIndex(), rf.lastLTerm(), args.LastLogIndex, args.LastLogTerm)
 	}*/
 }
 
@@ -295,7 +294,7 @@ func (rf *Raft) vote(args *RequestVoteArgs) bool {
 }
 
 func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
-	return (lastTerm > rf.lastLogTerm) || (lastTerm == rf.lastLogTerm && lastIndex >= rf.lastLIndex())
+	return (lastTerm > rf.lastLTerm()) || (lastTerm == rf.lastLTerm() && lastIndex >= rf.lastLIndex())
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -483,7 +482,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) appendEntryLocal(command interface{}) {
 	nextIndex := rf.lastLIndex() + 1
-	rf.lastLogTerm = rf.currentTerm
 	rf.log = append(rf.log, LogEntry{
 		Index:   nextIndex,
 		Term:    rf.currentTerm,
@@ -503,7 +501,6 @@ func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
 			break
 		}
 	}
-	rf.lastLogTerm = rf.log[rf.lastLIndex()].Term
 	rf.persist()
 }
 
@@ -621,7 +618,7 @@ func (rf *Raft) election() {
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
 		LastLogIndex: rf.lastLIndex(),
-		LastLogTerm:  rf.lastLogTerm,
+		LastLogTerm:  rf.lastLTerm(),
 	}
 	me := rf.me
 	preGatherTerm := rf.currentTerm
@@ -719,11 +716,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peersCount = int64(len(rf.peers))
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.lastLogIndex = len(rf.log) - 1
-	rf.lastLogTerm = 0
-	if rf.lastLogIndex >= 0 {
-		rf.lastLogTerm = rf.log[rf.lastLogIndex].Term
-	}
 	/*
 		rf.currentTerm = 0
 		rf.votedFor = -1
