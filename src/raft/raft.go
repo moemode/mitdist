@@ -195,6 +195,7 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&rf.lastIncludedIndex) != nil || d.Decode(&rf.lastIncludedTerm) != nil {
 		log.Fatalf("s")
 	}
+
 }
 
 // the service says it has created a snapshot that has
@@ -205,6 +206,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	// app uses 1 based numbering
 	rf.mu.Lock()
+	//log.Printf("Snapshot called")
 	defer rf.mu.Unlock()
 	index = index - 1
 	if index <= rf.lastIncludedIndex {
@@ -223,12 +225,16 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 // only retain log entries after index
 func (rf *Raft) trim(index int) {
-	nTrim := (index - rf.baseIndex) + 1
 	lastIncluded := rf.logEntry(index)
-	if lastIncluded.Index != index {
-		log.Fatalf("[SNAPSHOT] lastIncluded.index != index.")
+	if index >= rf.lastLogIndex() {
+		rf.log = make([]LogEntry, 0)
+	} else {
+		nTrim := (index - rf.baseIndex) + 1
+		if lastIncluded.Index != index {
+			log.Fatalf("[SNAPSHOT] lastIncluded.index != index.")
+		}
+		rf.log = rf.log[nTrim:]
 	}
-	rf.log = rf.log[nTrim:]
 	rf.lastIncludedIndex = lastIncluded.Index
 	rf.lastIncludedTerm = lastIncluded.Term
 	rf.baseIndex = rf.lastIncludedIndex + 1
@@ -380,7 +386,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = (args.Term >= rf.currentTerm) && rf.vote(args)
 	if reply.VoteGranted {
-		log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLogIndex(), rf.lastLogTerm(), args.LastLogIndex, args.LastLogTerm)
+		//log.Printf("%v granted vote to %v in term %v\n %v, %v, %v, %v", rf.me, args.CandidateId, rf.currentTerm, rf.lastLogIndex(), rf.lastLogTerm(), args.LastLogIndex, args.LastLogTerm)
 	}
 }
 
@@ -727,6 +733,7 @@ func (rf *Raft) apply() {
 			}
 			var msg ApplyMsg
 			if rf.snapshotInstalled {
+				//log.Println("apply detected installed snapshot")
 				rf.lastApplied = rf.lastIncludedIndex
 				rf.snapshotInstalled = false
 				msg = ApplyMsg{
@@ -735,6 +742,7 @@ func (rf *Raft) apply() {
 					SnapshotIndex: rf.lastIncludedIndex + 1,
 					SnapshotTerm:  rf.lastIncludedTerm,
 				}
+				//log.Printf("%+v", msg)
 			} else {
 				rf.lastApplied++
 				msg = ApplyMsg{
@@ -868,6 +876,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.log = make([]LogEntry, 0)
 
 	*/
+	rf.snapshot = nil
+	snap := persister.ReadSnapshot()
+	if len(snap) != 0 {
+		rf.snapshot = snap
+		rf.snapshotInstalled = true
+	}
 	rf.state = FOLLOWER
 	rf.lastApplied = rf.lastIncludedIndex
 	rf.commitIndex = rf.lastIncludedIndex
@@ -875,8 +889,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, rf.peersCount)
 	rf.matchIndex = make([]int, rf.peersCount)
 	rf.commitIndexChanged = sync.NewCond(&rf.mu)
+	//log.Printf("Restored %v, baseIndex: %v, commitIndex: %v, lastApplied: %v", rf.me, rf.baseIndex, rf.commitIndex, rf.lastApplied)
 	rf.applyCh = applyCh
-	rf.snapshot = nil
 	//log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	rf.heardOrVotedAt = time.Now()
 	// start thread which leads if replica is leader
