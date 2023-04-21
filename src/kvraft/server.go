@@ -70,9 +70,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		Args: []string{args.Key},
 	})
 	if reply.Err != "" {
+		log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
 		return
 	}
 	reply.Err = ErrNoKey
+	reply.Value = ""
 	v, ok := kv.values[args.Key]
 	if ok {
 		reply.Value = v
@@ -83,30 +85,43 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	k, v := args.Key, args.Value
 	reply.Err = kv.Operation(Op{
 		Type: args.Op,
-		Args: []string{args.Key, args.Value},
+		Args: []string{k, v},
 	})
 }
 
 func (kv *KVServer) Operation(submittedOp Op) Err {
+	if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
+		log.Fatalf("Submitted op args length bad")
+	}
+	s := "key='" + submittedOp.Args[0] + "'"
+	if len(submittedOp.Args) == 2 {
+		s += " value='" + submittedOp.Args[1] + "'"
+	}
 	id, _, isLeader := kv.rf.Start(submittedOp)
 	if !isLeader {
 		return ErrWrongLeader
 	}
+	log.Printf("[SERVER] (ID=%v) Start %+v %v", id, submittedOp, s)
 	kv.waitingHandlerIndices[id] = Empty{}
 	for kv.lastApplyMsg.CommandIndex != id {
 		kv.lastApplyMsgChanged.Wait()
 	}
 	// handlers turn
+	//log.Printf("Operation applied")
 	m := kv.lastApplyMsg
+	err := Err("")
 	appliedOp := m.Command.(Op)
-	if appliedOp.Equals(&submittedOp) {
-		return ErrWrongLeader
+	if !appliedOp.Equals(&submittedOp) {
+		log.Fatalf("[SERVER] (ID=%v) does not match %+v", id, submittedOp)
+		err = ErrWrongLeader
 	}
+	log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, submittedOp)
 	kv.handlerDoneCh <- true
 	delete(kv.waitingHandlerIndices, id)
-	return ""
+	return err
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -135,13 +150,14 @@ func (kv *KVServer) apply() {
 			log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
-		//TODO: apply to kv map
 		kv.execute(m.Command.(Op))
 		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
+			kv.mu.Unlock()
+			log.Println("Continue")
 			continue
 		}
 		kv.lastApplyMsg = m
-		kv.lastApplyMsgChanged.Signal()
+		kv.lastApplyMsgChanged.Broadcast()
 		kv.mu.Unlock()
 		<-kv.handlerDoneCh
 	}
@@ -155,6 +171,7 @@ func (kv *KVServer) execute(op Op) {
 		} else if op.Type == "Append" {
 			kv.values[k] += v
 		}
+		log.Printf("[EXECUTE] %v='%v'\n", k, kv.values[k])
 	}
 }
 
