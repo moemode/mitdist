@@ -150,7 +150,7 @@ func (kv *KVServer) apply() {
 func (kv *KVServer) execute(op Op) {
 	if op.Type == "Put" || op.Type == "Append" {
 		k, v := op.Args[0], op.Args[1]
-		if op.Type == "Append" {
+		if op.Type == "Put" {
 			kv.values[k] = v
 		} else if op.Type == "Append" {
 			kv.values[k] += v
@@ -187,5 +187,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.handlerDoneCh = make(chan bool)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.values = make(map[string]string)
+	go kv.apply()
 	return kv
 }
