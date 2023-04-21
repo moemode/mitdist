@@ -27,6 +27,22 @@ type Op struct {
 	Args []string
 }
 
+func testEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (op *Op) Equals(op2 *Op) bool {
+	return op.Type == op2.Type && testEq(op.Args, op2.Args)
+}
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
@@ -37,68 +53,57 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh    chan bool
-	waitingHandlerCh map[int]chan raft.ApplyMsg
-	lastApplyMsg     raft.ApplyMsg
+	handlerDoneCh       chan bool
+	waitingHandlerCh    map[int]chan raft.ApplyMsg
+	lastApplyMsg        raft.ApplyMsg
+	lastApplyMsgChanged *sync.Cond
+	values              map[string]string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	reply.Err = OK
 	kv.mu.Lock()
-	id, t, isLeader := kv.rf.Start(Op{
+	defer kv.mu.Unlock()
+	reply.Err = kv.Operation(Op{
 		Type: "Get",
 		Args: []string{args.Key},
 	})
-	if !isLeader {
-		kv.mu.Unlock()
-		reply.Err = ErrWrongLeader
+	if reply.Err != "" {
 		return
-	} else {
-		kv.waitingHandlerCh[id] = make(chan raft.ApplyMsg)
-		kv.mu.Unlock()
 	}
-	m := <-kv.waitingHandlerCh[id]
-	appliedOp := m.Command.(Op)
-	if appliedOp == submittedOp {
-		ok, reply.Value = kv.values[args.Key]
-		if !ok {
-			reply.Err = ErrNoKey
-		}
-	} else {
-		reply.Err = ErrWrongLeader
+	reply.Err = ErrNoKey
+	v, ok := kv.values[args.Key]
+	if ok {
+		reply.Value = v
+		reply.Err = OK
 	}
-	kv.handlerDoneCh <- true
-	kv.mu.Lock()
-	delete(kv.waitingHandlerCh, id)
-	kv.mu.Unlock()
-
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	reply.Err = OK
 	kv.mu.Lock()
-	submittedOp := Op{
+	defer kv.mu.Unlock()
+	reply.Err = kv.Operation(Op{
 		Type: args.Op,
 		Args: []string{args.Key, args.Value},
-	}
-	id, t, isLeader := kv.rf.Start(submittedOp)
+	})
+}
+
+func (kv *KVServer) Operation(submittedOp Op) Err {
+	id, _, isLeader := kv.rf.Start(submittedOp)
 	if !isLeader {
-		kv.mu.Unlock()
-		reply.Err = ErrWrongLeader
-		return
-	} else {
-		kv.waitingHandlerCh[id] = make(chan raft.ApplyMsg)
-		kv.mu.Unlock()
+		return ErrWrongLeader
 	}
-	m := <-kv.waitingHandlerCh[id]
+	for kv.lastApplyMsg.CommandIndex != id {
+		kv.lastApplyMsgChanged.Wait()
+	}
+	// handlers turn
+	m := kv.lastApplyMsg
 	appliedOp := m.Command.(Op)
-	if appliedOp != submittedOp {
-		reply.Err = ErrWrongLeader
+	if appliedOp.Equals(&submittedOp) {
+		return ErrWrongLeader
 	}
 	kv.handlerDoneCh <- true
-	kv.mu.Lock()
 	delete(kv.waitingHandlerCh, id)
-	kv.mu.Unlock()
+	return ""
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -166,6 +171,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.waitingHandlerCh = make(map[int]chan raft.ApplyMsg)
 	kv.handlerDoneCh = make(chan bool)
-
+	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
+	kv.values = make(map[string]string)
 	return kv
 }
