@@ -19,6 +19,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type Empty struct{}
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -53,11 +55,11 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh       chan bool
-	waitingHandlerCh    map[int]chan raft.ApplyMsg
-	lastApplyMsg        raft.ApplyMsg
-	lastApplyMsgChanged *sync.Cond
-	values              map[string]string
+	handlerDoneCh         chan bool
+	waitingHandlerIndices map[int]Empty
+	lastApplyMsg          raft.ApplyMsg
+	lastApplyMsgChanged   *sync.Cond
+	values                map[string]string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -92,6 +94,7 @@ func (kv *KVServer) Operation(submittedOp Op) Err {
 	if !isLeader {
 		return ErrWrongLeader
 	}
+	kv.waitingHandlerIndices[id] = Empty{}
 	for kv.lastApplyMsg.CommandIndex != id {
 		kv.lastApplyMsgChanged.Wait()
 	}
@@ -102,7 +105,7 @@ func (kv *KVServer) Operation(submittedOp Op) Err {
 		return ErrWrongLeader
 	}
 	kv.handlerDoneCh <- true
-	delete(kv.waitingHandlerCh, id)
+	delete(kv.waitingHandlerIndices, id)
 	return ""
 }
 
@@ -132,12 +135,25 @@ func (kv *KVServer) apply() {
 			log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
-		//apply to kv map
-		ch, waiting := kv.waitingHandlerCh[m.CommandIndex]
+		//TODO: apply to kv map
+		kv.execute(m.Command.(Op))
+		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
+			continue
+		}
+		kv.lastApplyMsg = m
+		kv.lastApplyMsgChanged.Signal()
 		kv.mu.Unlock()
-		if waiting {
-			ch <- m
-			<-kv.handlerDoneCh
+		<-kv.handlerDoneCh
+	}
+}
+
+func (kv *KVServer) execute(op Op) {
+	if op.Type == "Put" || op.Type == "Append" {
+		k, v := op.Args[0], op.Args[1]
+		if op.Type == "Append" {
+			kv.values[k] = v
+		} else if op.Type == "Append" {
+			kv.values[k] += v
 		}
 	}
 }
@@ -169,7 +185,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.waitingHandlerCh = make(map[int]chan raft.ApplyMsg)
+	kv.waitingHandlerIndices = make(map[int]Empty)
 	kv.handlerDoneCh = make(chan bool)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.values = make(map[string]string)
