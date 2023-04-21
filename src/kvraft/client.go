@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"log"
 	"math/big"
 	"sync/atomic"
 
@@ -26,7 +27,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.nServers = int32(len(servers))
-	ck.tryNewLeader()
+	ck.tryNewLeader(0)
 	// You'll have to add code here.
 	return ck
 }
@@ -43,6 +44,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
+	log.Printf("Get %v", key)
 	for {
 		var reply GetReply
 		lid := atomic.LoadInt32(&ck.leaderId)
@@ -53,13 +55,13 @@ func (ck *Clerk) Get(key string) string {
 			return reply.Value
 		}
 		if !ok || (reply.Err == ErrWrongLeader) {
-			ck.tryNewLeader()
+			ck.tryNewLeader(lid)
 		}
 	}
 }
 
-func (ck *Clerk) tryNewLeader() {
-	atomic.StoreInt32(&ck.leaderId, int32(nrand()%int64(ck.nServers)))
+func (ck *Clerk) tryNewLeader(oldLeader int32) {
+	atomic.CompareAndSwapInt32(&ck.leaderId, oldLeader, int32(nrand()%int64(ck.nServers)))
 }
 
 // shared by Put and Append.
@@ -71,12 +73,16 @@ func (ck *Clerk) tryNewLeader() {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
+	log.Printf("%v %v %v", op, key, value)
 	for {
 		var reply PutAppendReply
 		lid := atomic.LoadInt32(&ck.leaderId)
 		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{key, value, op}, &reply)
+		if ok {
+			return
+		}
 		if !ok || (reply.Err == ErrWrongLeader) {
-			ck.tryNewLeader()
+			ck.tryNewLeader(lid)
 		}
 	}
 }
