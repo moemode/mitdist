@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"log"
 	"math/big"
+	"sync"
 	"sync/atomic"
 
 	"6.5840/labrpc"
@@ -14,6 +15,8 @@ type Clerk struct {
 	leaderId int32
 	nServers int32
 	id       int64
+	reqN     int64
+	reqNumMu sync.Mutex
 	// You will have to modify this struct.
 }
 
@@ -28,7 +31,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.nServers = int32(len(servers))
-	ck.id = nrand() % 100
+	ck.id = nrand()
+	ck.reqN = -1
 	ck.tryNewLeader(0)
 	log.Printf("Clerk %v", ck.id)
 	// You'll have to add code here.
@@ -52,7 +56,9 @@ func (ck *Clerk) Get(key string) string {
 		var reply GetReply
 		lid := atomic.LoadInt32(&ck.leaderId)
 		ok := ck.servers[lid].Call("KVServer.Get", &GetArgs{
-			Key: key,
+			ClientId:      ck.id,
+			RequestNumber: ck.reqNum(),
+			Key:           key,
 		}, &reply)
 		if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 			log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
@@ -70,6 +76,13 @@ func (ck *Clerk) tryNewLeader(oldLeader int32) {
 	atomic.CompareAndSwapInt32(&ck.leaderId, oldLeader, int32(nrand()%int64(ck.nServers)))
 }
 
+func (ck *Clerk) reqNum() int64 {
+	ck.reqNumMu.Lock()
+	defer ck.reqNumMu.Unlock()
+	ck.reqN++
+	return ck.reqN
+}
+
 // shared by Put and Append.
 //
 // you can send an RPC with code like this:
@@ -83,7 +96,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		var reply PutAppendReply
 		lid := atomic.LoadInt32(&ck.leaderId)
 		log.Printf("[CLERK %v] %v key:%v value:'%v'", ck.id, op, key, value)
-		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{key, value, op}, &reply)
+		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{
+			ClientId:      ck.id,
+			RequestNumber: ck.reqNum(),
+			Key:           key,
+			Value:         value,
+			Op:            op,
+		}, &reply)
 		if ok && reply.Err == "" {
 			log.Printf("[CLERK %v] SUCCESS %v key:%v value:'%v'", ck.id, op, key, value)
 			return
