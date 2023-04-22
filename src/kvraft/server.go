@@ -25,8 +25,14 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type OpType
-	Args []string
+	Type                    OpType
+	Args                    []string
+	ClientId, RequestNumber int64
+}
+
+type Result struct {
+	requestNumber int64
+	result        string
 }
 
 func testEq(a, b []string) bool {
@@ -60,14 +66,17 @@ type KVServer struct {
 	lastApplyMsg          raft.ApplyMsg
 	lastApplyMsgChanged   *sync.Cond
 	values                map[string]string
+	lastRequest           map[int64]Result
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	reply.Err = kv.Operation(Op{
-		Type: GetOp,
-		Args: []string{args.Key},
+		Type:          GetOp,
+		Args:          []string{args.Key},
+		ClientId:      args.ClientId,
+		RequestNumber: args.RequestNumber,
 	})
 	if reply.Err != "" {
 		log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
@@ -87,8 +96,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	defer kv.mu.Unlock()
 	k, v := args.Key, args.Value
 	reply.Err = kv.Operation(Op{
-		Type: args.Op,
-		Args: []string{k, v},
+		Type:          args.Op,
+		Args:          []string{k, v},
+		ClientId:      args.ClientId,
+		RequestNumber: args.RequestNumber,
 	})
 }
 
@@ -118,6 +129,7 @@ func (kv *KVServer) Operation(submittedOp Op) Err {
 		log.Fatalf("[SERVER] (ID=%v) does not match %+v", id, submittedOp)
 		err = ErrWrongLeader
 	}
+
 	log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, submittedOp)
 	kv.handlerDoneCh <- true
 	delete(kv.waitingHandlerIndices, id)
@@ -150,7 +162,16 @@ func (kv *KVServer) apply() {
 			log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
-		kv.execute(m.Command.(Op))
+		op := m.Command.(Op)
+		r, exists := kv.lastRequest[op.ClientId]
+		isDuplicate := exists && r.requestNumber == op.RequestNumber
+		if !isDuplicate {
+			kv.lastRequest[op.ClientId] = Result{
+				requestNumber: op.RequestNumber,
+				result:        kv.execute(op),
+			}
+		}
+		log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
 		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
 			kv.mu.Unlock()
 			log.Println("Continue")
@@ -163,16 +184,17 @@ func (kv *KVServer) apply() {
 	}
 }
 
-func (kv *KVServer) execute(op Op) {
-	if op.Type == PutOp || op.Type == AppendOp {
-		k, v := op.Args[0], op.Args[1]
-		if op.Type == "Put" {
-			kv.values[k] = v
-		} else if op.Type == AppendOp {
-			kv.values[k] += v
-		}
-		log.Printf("[EXECUTE] %v='%v'\n", k, kv.values[k])
+func (kv *KVServer) execute(op Op) string {
+	switch op.Type {
+	case GetOp:
+		return kv.values[op.Args[0]]
+	case PutOp:
+		kv.values[op.Args[0]] = op.Args[1]
+	case AppendOp:
+		kv.values[op.Args[0]] += op.Args[1]
 	}
+	return ""
+	//log.Printf("[EXECUTE] %v='%v'\n", op.Args[0], kv.values[op.Args[0]])
 }
 
 // servers[] contains the ports of the set of
@@ -204,6 +226,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.handlerDoneCh = make(chan bool)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.values = make(map[string]string)
+	kv.lastRequest = make(map[int64]Result)
 	go kv.apply()
 	return kv
 }
