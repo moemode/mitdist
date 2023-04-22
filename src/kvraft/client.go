@@ -101,7 +101,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			RequestNumber: ck.reqNum(),
 			Key:           key,
 			Value:         value,
-			Op:            op,
+			Op:            OpType(op),
 		}, &reply)
 		if ok && reply.Err == "" {
 			log.Printf("[CLERK %v] SUCCESS %v key:%v value:'%v'", ck.id, op, key, value)

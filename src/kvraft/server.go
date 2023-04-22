@@ -25,7 +25,7 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type string
+	Type OpType
 	Args []string
 }
 
@@ -66,7 +66,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	reply.Err = kv.Operation(Op{
-		Type: "Get",
+		Type: GetOp,
 		Args: []string{args.Key},
 	})
 	if reply.Err != "" {
@@ -164,11 +164,11 @@ func (kv *KVServer) apply() {
 }
 
 func (kv *KVServer) execute(op Op) {
-	if op.Type == "Put" || op.Type == "Append" {
+	if op.Type == PutOp || op.Type == AppendOp {
 		k, v := op.Args[0], op.Args[1]
 		if op.Type == "Put" {
 			kv.values[k] = v
-		} else if op.Type == "Append" {
+		} else if op.Type == AppendOp {
 			kv.values[k] += v
 		}
 		log.Printf("[EXECUTE] %v='%v'\n", k, kv.values[k])

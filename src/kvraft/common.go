@@ -8,13 +8,21 @@ const (
 
 type Err string
 
+type OpType string
+
+const (
+	GetOp    OpType = "Get"
+	PutOp    OpType = "Put"
+	AppendOp OpType = "Append"
+)
+
 // Put or Append
 type PutAppendArgs struct {
 	ClientId      int64
 	RequestNumber int64
 	Key           string
 	Value         string
-	Op            string // "Put" or "Append"
+	Op            OpType // "Put" or "Append"
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
