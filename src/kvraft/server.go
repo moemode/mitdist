@@ -3,6 +3,7 @@ package kvraft
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,7 +108,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// IMPORTANT: lock before rf.Start,
 	// to avoid raft finish too quick before kv.commandTbl has set replyCh for this commandIndex
 	kv.mu.Lock()
+	s := time.Now()
 	index, term, isLeader := kv.rf.Start(op)
+	log.Printf("[CLIENT %v] Start(%+v) took %v", args.ClientId, op, time.Since(s))
 	if term == 0 {
 		// OPTIMIZATION: is in startup's initial election
 		// reply with error to tell client to wait for a while
@@ -155,14 +158,19 @@ CheckTermAndWaitReply:
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	entrys := time.Now()
 	if kv.killed() {
 		reply.Err = ErrShutdown
 		return
 	}
-
 	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
 	kv.mu.Lock()
+	//log.Printf("[CLIENT %v] Start(%+v)", args.ClientId, op)
+	tstart := time.Now()
 	index, term, isLeader := kv.rf.Start(op)
+	log.Printf("PutAppend - Start took %v", time.Since(tstart))
+	log.Printf("[CLIENT %v] Start(%+v) took %v", args.ClientId, op, time.Since(entrys))
+
 	if term == 0 {
 		kv.mu.Unlock()
 		reply.Err = ErrInitElection
@@ -183,6 +191,7 @@ CheckTermAndWaitReply:
 	for !kv.killed() {
 		select {
 		case result, ok := <-c:
+			log.Printf("PutAppend took %v to get applyResult", time.Since(entrys))
 			if !ok {
 				reply.Err = ErrShutdown
 				return
@@ -195,10 +204,12 @@ CheckTermAndWaitReply:
 			t, _ := kv.rf.GetState()
 			if term != t {
 				reply.Err = ErrWrongLeader
+				log.Printf("PutAppend took %v to figure out lost leader", time.Since(entrys))
 				break CheckTermAndWaitReply
 			}
 		}
 	}
+	log.Printf("PutAppend took %v", time.Since(entrys))
 
 	go func() { <-c }() // avoid applier from blocking, and avoid resource leak
 	if kv.killed() {

@@ -118,6 +118,8 @@ type Raft struct {
 	applyCh                  chan ApplyMsg
 	snapshot                 []byte
 	snapshotInstalled        bool
+
+	startLastCalled time.Time
 }
 
 func (rf *Raft) lastLogIndex() int {
@@ -467,6 +469,7 @@ func (rf *Raft) appendMissingEntriesOnAll(term int) {
 
 func (rf *Raft) appendMissingEntries(term, server int) {
 	rf.mu.Lock()
+	s := time.Now()
 	if rf.state != LEADER || rf.currentTerm != term {
 		rf.mu.Unlock()
 		return
@@ -497,6 +500,7 @@ func (rf *Raft) appendMissingEntries(term, server int) {
 		Entries:           missing,
 		LeaderCommitIndex: rf.commitIndex,
 	}
+	log.Printf("AppendMissingEntries took %v", time.Since(s))
 	rf.mu.Unlock()
 	rf.appendEntries(server, &args)
 }
@@ -617,21 +621,24 @@ func (rf *Raft) handleHigherTerm(newTerm int) {
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
+	sL := time.Now()
+	log.Printf("Start since last called %v", time.Since(rf.startLastCalled))
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state == LEADER {
+		log.Printf("Start waited for lock %v", time.Since(sL))
 		s := time.Now()
-		log.Printf("Start on Leader")
 		//log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex()
 		log.Printf("Start on Leader took %v", time.Since(s))
 	}
+	rf.startLastCalled = time.Now()
 	return index + 1, rf.currentTerm, rf.state == LEADER
 }
 
 func (rf *Raft) appendEntryLocal(command interface{}) {
-	log.Printf("AppendEntryLocal")
+	log.Printf("[START] AppendEntryLocal")
 	nextIndex := rf.lastLogIndex() + 1
 	rf.log = append(rf.log, LogEntry{
 		Index:   nextIndex,
@@ -639,7 +646,7 @@ func (rf *Raft) appendEntryLocal(command interface{}) {
 		Command: command,
 	})
 	rf.matchIndex[rf.me] = nextIndex
-	rf.persist()
+	//rf.persist()
 }
 
 func (rf *Raft) appendEntriesLocal(start int, entries []LogEntry) {
@@ -685,15 +692,16 @@ func (rf *Raft) majority() int64 {
 
 func (rf *Raft) lead() {
 	for !rf.killed() {
+		s := time.Now()
 		rf.mu.Lock()
 		if rf.state == LEADER {
-			//log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
-			log.Printf("appendMissingEntriesOnAll")
-			s := time.Now()
+			log.Printf("[LEADER %v] match: %v, next:%v, commitIndex: %v\n", rf.me, rf.matchIndex, rf.nextIndex, rf.commitIndex)
 			rf.appendMissingEntriesOnAll(rf.currentTerm)
-			log.Printf("appendMissingEntriesOnAll took %v", time.Since(s))
+			log.Printf("appendMissingEntriesOnAll %v", time.Since(s))
+
 		}
 		rf.mu.Unlock()
+
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -701,6 +709,7 @@ func (rf *Raft) lead() {
 func (rf *Raft) advanceCommitIndex() {
 	for !rf.killed() {
 		rf.mu.Lock()
+		//s := time.Now()
 		if rf.state == LEADER || rf.commitIndex != rf.lastLogIndex() {
 			l := rf.largestOnMajority()
 			if l != rf.LastIncludedIndex && l > rf.commitIndex && rf.logEntry(l).Term == rf.currentTerm {
@@ -708,8 +717,9 @@ func (rf *Raft) advanceCommitIndex() {
 				rf.commitIndexChanged.Signal()
 			}
 		}
+		//log.Printf("advanceCommitIndex held lock for %v", time.Since(s))
 		rf.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 	}
 }
 
@@ -811,7 +821,7 @@ func (rf *Raft) becomeLeader() {
 	setAll(rf.matchIndex, -1)
 	rf.matchIndex[rf.me] = rf.lastLogIndex()
 	rf.appendMissingEntriesOnAll(rf.currentTerm)
-	//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
+	log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {
@@ -907,6 +917,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	//log.Printf("nPeers: %v, majority: %v", rf.nPeers(), rf.majority())
 	rf.heardOrVotedAt = time.Now()
+	rf.startLastCalled = time.Now()
 	// start thread which leads if replica is leader
 	go rf.lead()
 	// start ticker goroutine to start elections

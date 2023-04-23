@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"log"
 	"time"
 
 	"6.5840/labrpc"
@@ -56,6 +57,7 @@ func (ck *Clerk) Get(key string) string {
 		}
 		if reply.Err == ErrInitElection {
 			// sleep for a while, wait for KVServer raft leader election done
+			log.Printf("Client sleeps")
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -101,6 +103,7 @@ func (ck *Clerk) PutAppend(key string, value string, op opType) {
 		}
 		if reply.Err == ErrInitElection {
 			// sleep for a while, wait for KVServer raft leader election done
+			log.Printf("Client sleeps")
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
