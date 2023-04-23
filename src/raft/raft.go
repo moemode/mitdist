@@ -139,6 +139,18 @@ func (rf *Raft) logEntry(entryIndex int) LogEntry {
 	return rf.log[entryIndex-rf.baseIndex]
 }
 
+func (rf *Raft) IsLeader() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.state == LEADER
+}
+
+func (rf *Raft) Term() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm
+}
+
 func (rf *Raft) logEntries(start int) []LogEntry {
 	start = start - rf.baseIndex
 	return rf.log[start:]
@@ -804,7 +816,7 @@ func (rf *Raft) becomeLeader() {
 	setAll(rf.matchIndex, -1)
 	rf.matchIndex[rf.me] = rf.lastLogIndex()
 	rf.appendMissingEntriesOnAll(rf.currentTerm)
-	//log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
+	log.Printf("[LEADER %v] JUST ELECTED\n", rf.me)
 }
 
 func (rf *Raft) gatherVotes(args *RequestVoteArgs, me int) bool {

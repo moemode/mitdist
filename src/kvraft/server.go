@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
@@ -61,7 +62,7 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh         chan bool
+	handlerDoneCh         chan int
 	waitingHandlerIndices map[int]Empty
 	lastApplyMsg          raft.ApplyMsg
 	lastApplyMsgChanged   *sync.Cond
@@ -103,7 +104,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	})
 }
 
-func (kv *KVServer) Operation(submittedOp Op) (string, Err) {
+func (kv *KVServer) Operation(op Op) (string, Err) {
 	/*
 			if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
 				log.Fatalf("Submitted op args length bad")
@@ -134,33 +135,56 @@ func (kv *KVServer) Operation(submittedOp Op) (string, Err) {
 				return kv.lastRequest[submittedOp.ClientId].result, ""
 			}
 	*/
-
-	id, _, isLeader := kv.rf.Start(submittedOp)
+	if kv.isDuplicate(op) {
+		if r, mostRecent := kv.duplicateResult(op); mostRecent {
+			return r.result, ""
+		} else {
+			return "", "Outdated"
+		}
+	}
+	id, t, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		return "", ErrWrongLeader
 	}
-	log.Printf("[SERVER] (ID=%v) Start %+v", id, submittedOp)
+	//log.Printf("Here")
+
+	log.Printf("[SERVER] (ID=%v) Start %+v", id, op)
 	_, alreadyWaiting := kv.waitingHandlerIndices[id]
 	if alreadyWaiting {
 		log.Fatalf("Some RPC is already waiting for %v", id)
 	}
 	kv.waitingHandlerIndices[id] = Empty{}
-	for kv.lastApplyMsg.CommandIndex != id {
+	for kv.rf.IsLeader() && kv.rf.Term() == t && kv.lastApplyMsg.CommandIndex != id {
+		log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
+		log.Printf("Back to sleep %+v", op)
+		log.Printf("%v", kv.lastRequest)
 		kv.lastApplyMsgChanged.Wait()
+	}
+	if !kv.rf.IsLeader() || kv.rf.Term() != t {
+		if kv.lastApplyMsg.CommandIndex == id {
+			kv.handlerDoneCh <- id
+		}
+		return "", ErrWrongLeader
 	}
 	// handlers turn
 	//log.Printf("Operation applied")
 	m := kv.lastApplyMsg
 	err := Err("")
 	appliedOp := m.Command.(Op)
-	if !appliedOp.Equals(&submittedOp) {
-		log.Fatalf("[SERVER] %+v does not match %+v", appliedOp, submittedOp)
-		err = ErrWrongLeader
+	if !appliedOp.Equals(&op) {
+		log.Printf("[SERVER] %+v does not match %+v", appliedOp, op)
+		if kv.lastApplyMsg.CommandIndex == id {
+			kv.handlerDoneCh <- id
+		}
+		//err = ErrWrongLeader
+		return "", ErrWrongLeader
 	}
 
-	log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, submittedOp)
-	r := kv.lastRequest[submittedOp.ClientId]
-	kv.handlerDoneCh <- true
+	//log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, op)
+	r := kv.lastRequest[op.ClientId]
+
+	kv.handlerDoneCh <- id
+
 	delete(kv.waitingHandlerIndices, id)
 	return r.result, err
 }
@@ -184,6 +208,19 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kv *KVServer) isDuplicate(op Op) bool {
+	r, exists := kv.lastRequest[op.ClientId]
+	return exists && r.requestNumber >= op.RequestNumber
+}
+
+func (kv *KVServer) duplicateResult(op Op) (Result, bool) {
+	r, exists := kv.lastRequest[op.ClientId]
+	if exists && r.requestNumber == op.RequestNumber {
+		return r, true
+	}
+	return Result{}, false
+}
+
 func (kv *KVServer) apply() {
 	for !kv.killed() {
 		m := <-kv.applyCh
@@ -192,9 +229,7 @@ func (kv *KVServer) apply() {
 		}
 		kv.mu.Lock()
 		op := m.Command.(Op)
-		r, exists := kv.lastRequest[op.ClientId]
-		isDuplicate := exists && r.requestNumber == op.RequestNumber
-		if !isDuplicate {
+		if !kv.isDuplicate(op) {
 			kv.lastRequest[op.ClientId] = Result{
 				requestNumber: op.RequestNumber,
 				result:        kv.execute(op),
@@ -209,7 +244,14 @@ func (kv *KVServer) apply() {
 		kv.lastApplyMsg = m
 		kv.lastApplyMsgChanged.Broadcast()
 		kv.mu.Unlock()
-		<-kv.handlerDoneCh
+		log.Println("Apply waiting for rpc exit")
+		for {
+			idx := <-kv.handlerDoneCh
+			if idx == m.CommandIndex {
+				break
+			}
+		}
+		log.Println("Apply detected rpc exit")
 	}
 }
 
@@ -252,10 +294,16 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.waitingHandlerIndices = make(map[int]Empty)
-	kv.handlerDoneCh = make(chan bool)
+	kv.handlerDoneCh = make(chan int)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.values = make(map[string]string)
 	kv.lastRequest = make(map[int64]Result)
 	go kv.apply()
+	go func() {
+		for {
+			kv.lastApplyMsgChanged.Broadcast()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
 	return kv
 }

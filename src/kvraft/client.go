@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"crypto/rand"
-	"log"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -34,7 +33,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.id = nrand()
 	ck.reqN = -1
 	ck.tryNewLeader(0)
-	log.Printf("Clerk %v", ck.id)
+	// log.Printf("Clerk %v", ck.id)
 	// You'll have to add code here.
 	return ck
 }
