@@ -632,6 +632,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex()
 		log.Printf("Start on Leader took %v", time.Since(s))
+		rf.appendMissingEntriesOnAll(rf.currentTerm)
 	}
 	rf.startLastCalled = time.Now()
 	return index + 1, rf.currentTerm, rf.state == LEADER
@@ -701,8 +702,7 @@ func (rf *Raft) lead() {
 
 		}
 		rf.mu.Unlock()
-
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 	}
 }
 
