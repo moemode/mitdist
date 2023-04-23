@@ -1,41 +1,27 @@
 package kvraft
 
 import (
-	"crypto/rand"
-	"log"
-	"math/big"
-	"sync"
-	"sync/atomic"
+	"time"
 
 	"6.5840/labrpc"
+	"6.5840/labutil"
 )
 
 type Clerk struct {
-	servers  []*labrpc.ClientEnd
-	leaderId int32
-	nServers int32
-	id       int64
-	reqN     int64
-	reqNumMu sync.Mutex
+	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-}
-
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := rand.Int(rand.Reader, max)
-	x := bigx.Int64()
-	return x
+	me     int64 // my client id
+	leader int   // remember which server turned out to be the leader for the last RPC
+	opId   int   // operation id, increase monotonically
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.nServers = int32(len(servers))
-	ck.id = nrand()
-	ck.reqN = -1
-	ck.tryNewLeader(0)
-	log.Printf("Clerk %v", ck.id)
 	// You'll have to add code here.
+	ck.me = labutil.Nrand()
+	ck.leader = 0
+	ck.opId = 1
 	return ck
 }
 
@@ -51,37 +37,37 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	rN := ck.reqNum()
-	log.Printf("[CLERK %v] Get %v", ck.id, key)
+	args := &GetArgs{
+		Key:      key,
+		ClientId: ck.me,
+		OpId:     ck.opId,
+	}
+	ck.opId++
+	serverId := ck.leader // send to leader first
 	for {
-		var reply GetReply
-		lid := atomic.LoadInt32(&ck.leaderId)
-		ok := ck.servers[lid].Call("KVServer.Get", &GetArgs{
-			ClientId:      ck.id,
-			RequestNumber: rN,
-			Key:           key,
-		}, &reply)
-		if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-			log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
+		reply := &GetReply{}
+		ok := ck.servers[serverId].Call("KVServer.Get", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown {
+			// no reply (reply dropped, network partition, server down, etc.) or
+			// wrong leader,
+			// try next server
+			serverId = (serverId + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrInitElection {
+			// sleep for a while, wait for KVServer raft leader election done
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		ck.leader = serverId // remember current leader
+		if reply.Err == ErrNoKey {
+			return ""
+		}
+		if reply.Err == OK {
 			return reply.Value
 		}
-		ck.tryNewLeader(lid)
-		/*
-			if !ok || (reply.Err == ErrWrongLeader) {
-				ck.tryNewLeader(lid)
-			}*/
 	}
-}
-
-func (ck *Clerk) tryNewLeader(oldLeader int32) {
-	atomic.CompareAndSwapInt32(&ck.leaderId, oldLeader, int32(nrand()%int64(ck.nServers)))
-}
-
-func (ck *Clerk) reqNum() int64 {
-	ck.reqNumMu.Lock()
-	defer ck.reqNumMu.Unlock()
-	ck.reqN++
-	return ck.reqN
 }
 
 // shared by Put and Append.
@@ -92,30 +78,43 @@ func (ck *Clerk) reqNum() int64 {
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	rN := ck.reqNum()
+func (ck *Clerk) PutAppend(key string, value string, op opType) {
+	// You will have to modify this function.
+	args := &PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		ClientId: ck.me,
+		OpId:     ck.opId,
+	}
+	ck.opId++
+	serverId := ck.leader // send to leader first
 	for {
-		var reply PutAppendReply
-		lid := atomic.LoadInt32(&ck.leaderId)
-		log.Printf("[CLERK %v] %v key:%v value:'%v'", ck.id, op, key, value)
-		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{
-			ClientId:      ck.id,
-			RequestNumber: rN,
-			Key:           key,
-			Value:         value,
-			Op:            OpType(op),
-		}, &reply)
-		if ok && reply.Err == "" {
-			log.Printf("[CLERK %v] SUCCESS %v key:%v value:'%v'", ck.id, op, key, value)
+		reply := &PutAppendReply{}
+		ok := ck.servers[serverId].Call("KVServer.PutAppend", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown {
+			// no reply (reply dropped, network partition, server down, etc.) or
+			// wrong leader,
+			// try next server
+			serverId = (serverId + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrInitElection {
+			// sleep for a while, wait for KVServer raft leader election done
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		ck.leader = serverId // remember current leader
+		if reply.Err == OK {
 			return
 		}
-		ck.tryNewLeader(lid)
 	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, opPut)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, opAppend)
 }

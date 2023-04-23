@@ -1,174 +1,215 @@
 package kvraft
 
 import (
-	"log"
+	"bytes"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.5840/labgob"
+	"6.5840/lablog"
 	"6.5840/labrpc"
 	"6.5840/raft"
 )
 
-const Debug = false
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
-
-type Empty struct{}
+const (
+	// in each RPC handler, in case of leader lose its term while waiting for applyMsg from applyCh,
+	// handler will periodically check leader's currentTerm, to see if term changed
+	rpcHandlerCheckRaftTermInterval = 100
+	// max interval between snapshoter's checking of RaftStateSize,
+	// snapshoter will sleep according to RaftStateSize,
+	// if size grows big, sleep less time, and check more quickly,
+	// otherwise, sleep more time
+	snapshoterCheckInterval = 100
+	// in which ratio of RaftStateSize/maxraftstate should KVServer going to take a snapshot
+	snapshotThresholdRatio = 0.9
+	// after how many ApplyMsgs KVServer received and applied, should KVServer trigger to take a snapshot
+	snapshoterAppliedMsgInterval = 50
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type                    OpType
-	Args                    []string
-	ClientId, RequestNumber int64
+	Type  opType
+	Key   string
+	Value string
+
+	// for duplicated op detection
+	ClientId int64
+	OpId     int
 }
 
-type Result struct {
-	requestNumber int64
-	result        string
-}
-
-func testEq(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+func (op Op) String() string {
+	switch op.Type {
+	case opGet:
+		return fmt.Sprintf("{G %s}", op.Key)
+	case opPut:
+		return fmt.Sprintf("{P %s:%s}", op.Key, op.Value)
+	case opAppend:
+		return fmt.Sprintf("{A %s:+%s}", op.Key, op.Value)
+	default:
+		return ""
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+}
+
+type applyResult struct {
+	Err   Err
+	Value string
+	OpId  int
+}
+
+func (r applyResult) String() string {
+	switch r.Err {
+	case OK:
+		if l := len(r.Value); l < 10 {
+			return r.Value
+		} else {
+			return fmt.Sprintf("...%s", r.Value[l-10:])
 		}
+	default:
+		return string(r.Err)
 	}
-	return true
 }
 
-func (op *Op) Equals(op2 *Op) bool {
-	return op.Type == op2.Type && testEq(op.Args, op2.Args) && op.ClientId == op2.ClientId && op.RequestNumber == op2.RequestNumber
+type commandEntry struct {
+	op      Op
+	replyCh chan applyResult
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	mu   sync.Mutex
+	me   int
+	rf   *raft.Raft
+	dead int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
+	maxraftstate float64 // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh         chan bool
-	waitingHandlerIndices map[int]Empty
-	lastApplyMsg          raft.ApplyMsg
-	lastApplyMsgChanged   *sync.Cond
-	values                map[string]string
-	lastRequest           map[int64]Result
+
+	commandTbl          map[int]commandEntry // map from commandIndex to commandEntry, maintained by leader, initialized to empty when restart
+	appliedCommandIndex int                  // last applied commandIndex from applyCh
+
+	// need to persist between restart
+	Tbl       map[string]string     // key-value table
+	ClientTbl map[int64]applyResult // map from clientId to last RPC operation result (for duplicated operation detection)
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	_, reply.Err = kv.Operation(Op{
-		Type:          GetOp,
-		Args:          []string{args.Key},
-		ClientId:      args.ClientId,
-		RequestNumber: args.RequestNumber,
-	})
-	if reply.Err != "" {
-		log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
+	// Your code here.
+	if kv.killed() {
+		reply.Err = ErrShutdown
 		return
 	}
-	reply.Err = ErrNoKey
-	reply.Value = ""
-	v, ok := kv.values[args.Key]
-	if ok {
-		reply.Value = v
-		reply.Err = OK
+
+	op := Op{Type: opGet, Key: args.Key, ClientId: args.ClientId, OpId: args.OpId}
+	// IMPORTANT: lock before rf.Start,
+	// to avoid raft finish too quick before kv.commandTbl has set replyCh for this commandIndex
+	kv.mu.Lock()
+	index, term, isLeader := kv.rf.Start(op)
+	if term == 0 {
+		// OPTIMIZATION: is in startup's initial election
+		// reply with error to tell client to wait for a while
+		kv.mu.Unlock()
+		reply.Err = ErrInitElection
+		return
+	}
+	if !isLeader {
+		kv.mu.Unlock()
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	lablog.Debug(kv.me, lablog.Server, "Start op %v at idx: %d, from %d of client %d", op, index, op.OpId, op.ClientId)
+	c := make(chan applyResult) // reply channel for applier goroutine
+	kv.commandTbl[index] = commandEntry{op: op, replyCh: c}
+	kv.mu.Unlock()
+
+CheckTermAndWaitReply:
+	for !kv.killed() {
+		select {
+		case result, ok := <-c:
+			if !ok {
+				reply.Err = ErrShutdown
+				return
+			}
+			// get reply from applier goroutine
+			lablog.Debug(kv.me, lablog.Server, "Op %v at idx: %d get %v", op, index, result)
+			*reply = GetReply{Err: result.Err, Value: result.Value}
+			return
+		case <-time.After(rpcHandlerCheckRaftTermInterval * time.Millisecond):
+			t, _ := kv.rf.GetState()
+			if term != t {
+				reply.Err = ErrWrongLeader
+				break CheckTermAndWaitReply
+			}
+		}
+	}
+
+	go func() { <-c }() // avoid applier from blocking, and avoid resource leak
+	if kv.killed() {
+		reply.Err = ErrShutdown
 	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	// Your code here.
+	if kv.killed() {
+		reply.Err = ErrShutdown
+		return
+	}
+
+	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, ClientId: args.ClientId, OpId: args.OpId}
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	k, v := args.Key, args.Value
-	_, reply.Err = kv.Operation(Op{
-		Type:          args.Op,
-		Args:          []string{k, v},
-		ClientId:      args.ClientId,
-		RequestNumber: args.RequestNumber,
-	})
-}
-
-func (kv *KVServer) Operation(submittedOp Op) (string, Err) {
-	/*
-		if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
-			log.Fatalf("Submitted op args length bad")
-		}
-		s := "key='" + submittedOp.Args[0] + "'"
-		if len(submittedOp.Args) == 2 {
-			s += " value='" + submittedOp.Args[1] + "'"
-		}
-	*/
-	log.Printf("%+v", kv.lastRequest)
-	lR, ok := kv.lastRequest[submittedOp.ClientId]
-	if ok {
-		if lR.requestNumber > submittedOp.RequestNumber {
-			return "", ErrOldRequest
-		}
-		if lR.requestNumber == submittedOp.RequestNumber {
-			return kv.lastRequest[submittedOp.ClientId].result, ""
-		}
+	index, term, isLeader := kv.rf.Start(op)
+	if term == 0 {
+		kv.mu.Unlock()
+		reply.Err = ErrInitElection
+		return
 	}
-	/*
-		if kv.lastRequest[submittedOp.ClientId].requestNumber > submittedOp.RequestNumber {
-			log.Fatalf("1")
-			return "", ErrOldRequest
-		}
-		if kv.lastRequest[submittedOp.ClientId].requestNumber == submittedOp.RequestNumber {
-			log.Fatalf("2")
-			log.Printf("Answered from cache")
-			return kv.lastRequest[submittedOp.ClientId].result, ""
-		}
-	*/
-
-	id, _, isLeader := kv.rf.Start(submittedOp)
 	if !isLeader {
-		return "", ErrWrongLeader
-	}
-	log.Printf("[SERVER] (ID=%v) Start %+v", id, submittedOp)
-	_, alreadyWaiting := kv.waitingHandlerIndices[id]
-	if alreadyWaiting {
-		log.Fatalf("Some RPC is already waiting for %v", id)
-	}
-	kv.waitingHandlerIndices[id] = Empty{}
-	for kv.lastApplyMsg.CommandIndex != id {
-		kv.lastApplyMsgChanged.Wait()
-	}
-	// handlers turn
-	//log.Printf("Operation applied")
-	m := kv.lastApplyMsg
-	err := Err("")
-	appliedOp := m.Command.(Op)
-	if !appliedOp.Equals(&submittedOp) {
-		log.Fatalf("[SERVER] %+v does not match %+v", appliedOp, submittedOp)
-		err = ErrWrongLeader
+		kv.mu.Unlock()
+		reply.Err = ErrWrongLeader
+		return
 	}
 
-	log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, submittedOp)
-	r := kv.lastRequest[submittedOp.ClientId]
-	kv.handlerDoneCh <- true
-	delete(kv.waitingHandlerIndices, id)
-	return r.result, err
+	lablog.Debug(kv.me, lablog.Server, "Start op %v at idx: %d, from %d of client %d", op, index, op.OpId, op.ClientId)
+	c := make(chan applyResult) // reply channel for applier goroutine
+	kv.commandTbl[index] = commandEntry{op: op, replyCh: c}
+	kv.mu.Unlock()
+
+CheckTermAndWaitReply:
+	for !kv.killed() {
+		select {
+		case result, ok := <-c:
+			if !ok {
+				reply.Err = ErrShutdown
+				return
+			}
+			// get reply from applier goroutine
+			lablog.Debug(kv.me, lablog.Server, "Op %v at idx: %d completed", op, index)
+			reply.Err = result.Err
+			return
+		case <-time.After(rpcHandlerCheckRaftTermInterval * time.Millisecond):
+			t, _ := kv.rf.GetState()
+			if term != t {
+				reply.Err = ErrWrongLeader
+				break CheckTermAndWaitReply
+			}
+		}
+	}
+
+	go func() { <-c }() // avoid applier from blocking, and avoid resource leak
+	if kv.killed() {
+		reply.Err = ErrShutdown
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
-// and a killed() method to test rf.dead in
+// and a killed() method to test kv.dead in
 // long-running loops. you can also add your own
 // code to Kill(). you're not required to do anything
 // about this, but it may be convenient (for example)
@@ -182,48 +223,6 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
-}
-
-func (kv *KVServer) apply() {
-	for !kv.killed() {
-		m := <-kv.applyCh
-		if !m.CommandValid {
-			log.Fatalf("Non Command Apply Msg Unimplemented")
-		}
-		kv.mu.Lock()
-		op := m.Command.(Op)
-		r, exists := kv.lastRequest[op.ClientId]
-		isDuplicate := exists && r.requestNumber == op.RequestNumber
-		if !isDuplicate {
-			kv.lastRequest[op.ClientId] = Result{
-				requestNumber: op.RequestNumber,
-				result:        kv.execute(op),
-			}
-		}
-		log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
-		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
-			kv.mu.Unlock()
-			log.Println("Continue")
-			continue
-		}
-		kv.lastApplyMsg = m
-		kv.lastApplyMsgChanged.Broadcast()
-		kv.mu.Unlock()
-		<-kv.handlerDoneCh
-	}
-}
-
-func (kv *KVServer) execute(op Op) string {
-	switch op.Type {
-	case GetOp:
-		return kv.values[op.Args[0]]
-	case PutOp:
-		kv.values[op.Args[0]] = op.Args[1]
-	case AppendOp:
-		kv.values[op.Args[0]] += op.Args[1]
-	}
-	return ""
-	//log.Printf("[EXECUTE] %v='%v'\n", op.Args[0], kv.values[op.Args[0]])
 }
 
 // servers[] contains the ports of the set of
@@ -245,17 +244,188 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
-	kv.maxraftstate = maxraftstate
+	kv.maxraftstate = float64(maxraftstate)
+	applyCh := make(chan raft.ApplyMsg)
+	kv.rf = raft.Make(servers, me, persister, applyCh)
 	// You may need initialization code here.
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.appliedCommandIndex = kv.rf.LastIncludedIndex
+	kv.commandTbl = make(map[int]commandEntry)
+	kv.Tbl = make(map[string]string)
+	kv.ClientTbl = make(map[int64]applyResult)
 
-	// You may need initialization code here.
-	kv.waitingHandlerIndices = make(map[int]Empty)
-	kv.handlerDoneCh = make(chan bool)
-	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
-	kv.values = make(map[string]string)
-	kv.lastRequest = make(map[int64]Result)
-	go kv.apply()
+	// initialize from snapshot persisted before a crash
+	kv.readSnapshot(persister.ReadSnapshot())
+
+	// communication between applier and snapshoter,
+	// let applier trigger snapshoter to take a snapshot when certain amount of msgs have been applied
+	snapshotTrigger := make(chan bool, 1)
+
+	go kv.applier(applyCh, snapshotTrigger, kv.appliedCommandIndex)
+
+	go kv.snapshoter(persister, snapshotTrigger)
+
 	return kv
+}
+
+// The applier go routine accept applyMsg from applyCh (from underlying raft),
+// modify key-value table accordingly,
+// reply modified result back to KVServer's RPC handler, if any, through channel identified by commandIndex
+// after every snapshoterAppliedMsgInterval msgs, trigger a snapshot
+func (kv *KVServer) applier(applyCh <-chan raft.ApplyMsg, snapshotTrigger chan<- bool, lastSnapshoterTriggeredCommandIndex int) {
+	var r string
+
+	for m := range applyCh {
+		if m.SnapshotValid {
+			// is snapshot, reset kv server state according to this snapshot
+			lablog.Debug(kv.me, lablog.Snap, "Get snapshot at idx: %d", m.SnapshotIndex)
+			kv.mu.Lock()
+			kv.appliedCommandIndex = m.SnapshotIndex
+			kv.readSnapshot(m.Snapshot)
+			// clear all pending reply channel, to avoid goroutine resource leak
+			for _, ce := range kv.commandTbl {
+				ce.replyCh <- applyResult{Err: ErrWrongLeader}
+			}
+			kv.commandTbl = make(map[int]commandEntry)
+			kv.mu.Unlock()
+			continue
+		}
+
+		if !m.CommandValid {
+			continue
+		}
+
+		if m.CommandIndex-lastSnapshoterTriggeredCommandIndex > snapshoterAppliedMsgInterval {
+			// certain amount of msgs have been applied, going to tell snapshoter to take a snapshot
+			select {
+			case snapshotTrigger <- true:
+				lastSnapshoterTriggeredCommandIndex = m.CommandIndex // record as last time triggered commandIndex
+			default:
+			}
+		}
+
+		op := m.Command.(Op)
+		kv.mu.Lock()
+
+		kv.appliedCommandIndex = m.CommandIndex
+
+		lastOpResult, ok := kv.ClientTbl[op.ClientId]
+		if ok {
+			lablog.Debug(kv.me, lablog.Server, "Get op %#v at idx: %d, lastOpId: %d", op, m.CommandIndex, lastOpResult.OpId)
+		} else {
+			lablog.Debug(kv.me, lablog.Server, "Get op %#v at idx: %d", op, m.CommandIndex)
+		}
+
+		if lastOpResult.OpId >= op.OpId {
+			// detect duplicated operation
+			// reply with cached result, don't update kv table
+			r = lastOpResult.Value
+		} else {
+			switch op.Type {
+			case opGet:
+				r = kv.Tbl[op.Key]
+			case opPut:
+				kv.Tbl[op.Key] = op.Value
+				r = ""
+			case opAppend:
+				kv.Tbl[op.Key] = kv.Tbl[op.Key] + op.Value
+				r = ""
+			}
+
+			// cache operation result
+			kv.ClientTbl[op.ClientId] = applyResult{Value: r, OpId: op.OpId}
+		}
+
+		ce, ok := kv.commandTbl[m.CommandIndex]
+		if ok {
+			delete(kv.commandTbl, m.CommandIndex) // delete won't-use reply channel
+		}
+		kv.mu.Unlock()
+
+		// only leader server maintains commandTbl, followers just apply kv modification
+		if ok {
+			lablog.Debug(kv.me, lablog.Server, "Command tbl found for cidx: %d, %v", m.CommandIndex, ce)
+			if ce.op != op {
+				// Your solution needs to handle a leader that has called Start() for a Clerk's RPC,
+				// but loses its leadership before the request is committed to the log.
+				// In this case you should arrange for the Clerk to re-send the request to other servers
+				// until it finds the new leader.
+				//
+				// One way to do this is for the server to detect that it has lost leadership,
+				// by noticing that a different request has appeared at the index returned by Start()
+				ce.replyCh <- applyResult{Err: ErrWrongLeader}
+			} else {
+				ce.replyCh <- applyResult{Err: OK, Value: r}
+			}
+		}
+	}
+
+	// clean all pending RPC handler reply channel, avoid goroutine resource leak
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	for _, ce := range kv.commandTbl {
+		close(ce.replyCh)
+	}
+}
+
+// The snapshoter go routine periodically check if raft state size is approaching maxraftstate threshold,
+// if so, save a snapshot,
+// or, if receive a trigger event from applier, also take a snapshot
+func (kv *KVServer) snapshoter(persister *raft.Persister, snapshotTrigger <-chan bool) {
+	if kv.maxraftstate < 0 {
+		// no need to take snapshot
+		return
+	}
+
+	for !kv.killed() {
+		ratio := float64(persister.RaftStateSize()) / kv.maxraftstate
+		if ratio > snapshotThresholdRatio {
+			// is approaching threshold
+			kv.mu.Lock()
+			if data := kv.kvServerSnapshot(); data == nil {
+				lablog.Debug(kv.me, lablog.Error, "Write snapshot failed")
+			} else {
+				// take a snapshot
+				kv.rf.Snapshot(kv.appliedCommandIndex, data)
+			}
+			kv.mu.Unlock()
+
+			ratio = 0.0
+		}
+
+		select {
+		// sleep according to current RaftStateSize/maxraftstate ratio
+		case <-time.After(time.Duration((1-ratio)*snapshoterCheckInterval) * time.Millisecond):
+		// waiting for trigger
+		case <-snapshotTrigger:
+		}
+	}
+}
+
+// get KVServer instance state to be snapshotted, with mutex held
+func (kv *KVServer) kvServerSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.Tbl) != nil ||
+		e.Encode(kv.ClientTbl) != nil {
+		return nil
+	}
+	return w.Bytes()
+}
+
+// restore previously persisted snapshot, with mutex held
+func (kv *KVServer) readSnapshot(data []byte) {
+	if len(data) == 0 { // no snapshot data
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var tbl map[string]string
+	var clientTbl map[int64]applyResult
+	if d.Decode(&tbl) != nil ||
+		d.Decode(&clientTbl) != nil {
+		lablog.Debug(kv.me, lablog.Error, "Read broken snapshot")
+		return
+	}
+	kv.Tbl = tbl
+	kv.ClientTbl = clientTbl
 }
