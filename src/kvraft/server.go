@@ -105,34 +105,34 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) Operation(submittedOp Op) (string, Err) {
 	/*
-		if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
-			log.Fatalf("Submitted op args length bad")
+			if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
+				log.Fatalf("Submitted op args length bad")
+			}
+			s := "key='" + submittedOp.Args[0] + "'"
+			if len(submittedOp.Args) == 2 {
+				s += " value='" + submittedOp.Args[1] + "'"
+			}
+
+		log.Printf("%+v", kv.lastRequest)
+		lR, ok := kv.lastRequest[submittedOp.ClientId]
+		if ok {
+			if lR.requestNumber > submittedOp.RequestNumber {
+				return "", ErrOldRequest
+			}
+			if lR.requestNumber == submittedOp.RequestNumber {
+				return kv.lastRequest[submittedOp.ClientId].result, ""
+			}
 		}
-		s := "key='" + submittedOp.Args[0] + "'"
-		if len(submittedOp.Args) == 2 {
-			s += " value='" + submittedOp.Args[1] + "'"
-		}
-	*/
-	log.Printf("%+v", kv.lastRequest)
-	lR, ok := kv.lastRequest[submittedOp.ClientId]
-	if ok {
-		if lR.requestNumber > submittedOp.RequestNumber {
-			return "", ErrOldRequest
-		}
-		if lR.requestNumber == submittedOp.RequestNumber {
-			return kv.lastRequest[submittedOp.ClientId].result, ""
-		}
-	}
-	/*
-		if kv.lastRequest[submittedOp.ClientId].requestNumber > submittedOp.RequestNumber {
-			log.Fatalf("1")
-			return "", ErrOldRequest
-		}
-		if kv.lastRequest[submittedOp.ClientId].requestNumber == submittedOp.RequestNumber {
-			log.Fatalf("2")
-			log.Printf("Answered from cache")
-			return kv.lastRequest[submittedOp.ClientId].result, ""
-		}
+		/*
+			if kv.lastRequest[submittedOp.ClientId].requestNumber > submittedOp.RequestNumber {
+				log.Fatalf("1")
+				return "", ErrOldRequest
+			}
+			if kv.lastRequest[submittedOp.ClientId].requestNumber == submittedOp.RequestNumber {
+				log.Fatalf("2")
+				log.Printf("Answered from cache")
+				return kv.lastRequest[submittedOp.ClientId].result, ""
+			}
 	*/
 
 	id, _, isLeader := kv.rf.Start(submittedOp)
@@ -200,10 +200,10 @@ func (kv *KVServer) apply() {
 				result:        kv.execute(op),
 			}
 		}
-		log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
+		//log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
 		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
 			kv.mu.Unlock()
-			log.Println("Continue")
+			//log.Println("Continue")
 			continue
 		}
 		kv.lastApplyMsg = m

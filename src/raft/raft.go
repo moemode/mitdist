@@ -622,6 +622,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		//log.Printf("[LEADER] start called")
 		rf.appendEntryLocal(command)
 		index = rf.lastLogIndex()
+		rf.appendMissingEntriesOnAll(rf.currentTerm)
 	}
 	return index + 1, rf.currentTerm, rf.state == LEADER
 }

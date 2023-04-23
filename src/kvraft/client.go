@@ -52,7 +52,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	rN := ck.reqNum()
-	log.Printf("[CLERK %v] Get %v", ck.id, key)
+	//log.Printf("[CLERK %v] Get %v", ck.id, key)
 	for {
 		var reply GetReply
 		lid := atomic.LoadInt32(&ck.leaderId)
@@ -62,7 +62,7 @@ func (ck *Clerk) Get(key string) string {
 			Key:           key,
 		}, &reply)
 		if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-			log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
+			//log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
 			return reply.Value
 		}
 		ck.tryNewLeader(lid)
@@ -97,7 +97,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for {
 		var reply PutAppendReply
 		lid := atomic.LoadInt32(&ck.leaderId)
-		log.Printf("[CLERK %v] %v key:%v value:'%v'", ck.id, op, key, value)
+		//log.Printf("[CLERK %v] %v key:%v value:'%v'", ck.id, op, key, value)
 		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{
 			ClientId:      ck.id,
 			RequestNumber: rN,
@@ -106,7 +106,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			Op:            OpType(op),
 		}, &reply)
 		if ok && reply.Err == "" {
-			log.Printf("[CLERK %v] SUCCESS %v key:%v value:'%v'", ck.id, op, key, value)
+			//log.Printf("[CLERK %v] SUCCESS %v key:%v value:'%v'", ck.id, op, key, value)
 			return
 		}
 		ck.tryNewLeader(lid)
