@@ -48,7 +48,7 @@ func testEq(a, b []string) bool {
 }
 
 func (op *Op) Equals(op2 *Op) bool {
-	return op.Type == op2.Type && testEq(op.Args, op2.Args)
+	return op.Type == op2.Type && testEq(op.Args, op2.Args) && op.ClientId == op2.ClientId && op.RequestNumber == op2.RequestNumber
 }
 
 type KVServer struct {
@@ -72,7 +72,7 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	reply.Err = kv.Operation(Op{
+	_, reply.Err = kv.Operation(Op{
 		Type:          GetOp,
 		Args:          []string{args.Key},
 		ClientId:      args.ClientId,
@@ -95,7 +95,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	k, v := args.Key, args.Value
-	reply.Err = kv.Operation(Op{
+	_, reply.Err = kv.Operation(Op{
 		Type:          args.Op,
 		Args:          []string{k, v},
 		ClientId:      args.ClientId,
@@ -103,19 +103,47 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	})
 }
 
-func (kv *KVServer) Operation(submittedOp Op) Err {
-	if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
-		log.Fatalf("Submitted op args length bad")
+func (kv *KVServer) Operation(submittedOp Op) (string, Err) {
+	/*
+		if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
+			log.Fatalf("Submitted op args length bad")
+		}
+		s := "key='" + submittedOp.Args[0] + "'"
+		if len(submittedOp.Args) == 2 {
+			s += " value='" + submittedOp.Args[1] + "'"
+		}
+	*/
+	log.Printf("%+v", kv.lastRequest)
+	lR, ok := kv.lastRequest[submittedOp.ClientId]
+	if ok {
+		if lR.requestNumber > submittedOp.RequestNumber {
+			return "", ErrOldRequest
+		}
+		if lR.requestNumber == submittedOp.RequestNumber {
+			return kv.lastRequest[submittedOp.ClientId].result, ""
+		}
 	}
-	s := "key='" + submittedOp.Args[0] + "'"
-	if len(submittedOp.Args) == 2 {
-		s += " value='" + submittedOp.Args[1] + "'"
-	}
+	/*
+		if kv.lastRequest[submittedOp.ClientId].requestNumber > submittedOp.RequestNumber {
+			log.Fatalf("1")
+			return "", ErrOldRequest
+		}
+		if kv.lastRequest[submittedOp.ClientId].requestNumber == submittedOp.RequestNumber {
+			log.Fatalf("2")
+			log.Printf("Answered from cache")
+			return kv.lastRequest[submittedOp.ClientId].result, ""
+		}
+	*/
+
 	id, _, isLeader := kv.rf.Start(submittedOp)
 	if !isLeader {
-		return ErrWrongLeader
+		return "", ErrWrongLeader
 	}
-	log.Printf("[SERVER] (ID=%v) Start %+v %v", id, submittedOp, s)
+	log.Printf("[SERVER] (ID=%v) Start %+v", id, submittedOp)
+	_, alreadyWaiting := kv.waitingHandlerIndices[id]
+	if alreadyWaiting {
+		log.Fatalf("Some RPC is already waiting for %v", id)
+	}
 	kv.waitingHandlerIndices[id] = Empty{}
 	for kv.lastApplyMsg.CommandIndex != id {
 		kv.lastApplyMsgChanged.Wait()
@@ -126,14 +154,15 @@ func (kv *KVServer) Operation(submittedOp Op) Err {
 	err := Err("")
 	appliedOp := m.Command.(Op)
 	if !appliedOp.Equals(&submittedOp) {
-		log.Fatalf("[SERVER] (ID=%v) does not match %+v", id, submittedOp)
+		log.Fatalf("[SERVER] %+v does not match %+v", appliedOp, submittedOp)
 		err = ErrWrongLeader
 	}
 
 	log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, submittedOp)
+	r := kv.lastRequest[submittedOp.ClientId]
 	kv.handlerDoneCh <- true
 	delete(kv.waitingHandlerIndices, id)
-	return err
+	return r.result, err
 }
 
 // the tester calls Kill() when a KVServer instance won't

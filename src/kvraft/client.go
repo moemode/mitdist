@@ -51,13 +51,14 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
+	rN := ck.reqNum()
 	log.Printf("[CLERK %v] Get %v", ck.id, key)
 	for {
 		var reply GetReply
 		lid := atomic.LoadInt32(&ck.leaderId)
 		ok := ck.servers[lid].Call("KVServer.Get", &GetArgs{
 			ClientId:      ck.id,
-			RequestNumber: ck.reqNum(),
+			RequestNumber: rN,
 			Key:           key,
 		}, &reply)
 		if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -92,13 +93,14 @@ func (ck *Clerk) reqNum() int64 {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
+	rN := ck.reqNum()
 	for {
 		var reply PutAppendReply
 		lid := atomic.LoadInt32(&ck.leaderId)
 		log.Printf("[CLERK %v] %v key:%v value:'%v'", ck.id, op, key, value)
 		ok := ck.servers[lid].Call("KVServer.PutAppend", &PutAppendArgs{
 			ClientId:      ck.id,
-			RequestNumber: ck.reqNum(),
+			RequestNumber: rN,
 			Key:           key,
 			Value:         value,
 			Op:            OpType(op),
