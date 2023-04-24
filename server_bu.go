@@ -81,9 +81,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		RequestNumber: args.RequestNumber,
 	})
 	if reply.Err != "" {
-		//log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
+		log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
 		return
 	}
+	log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -96,10 +98,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		ClientId:      args.ClientId,
 		RequestNumber: args.RequestNumber,
 	})
-	if reply.Err != OK {
-		//log.Printf("[SERVER] PUT reply: %v", reply.Err)
-		return
-	}
 }
 
 func (kv *KVServer) Operation(op Op) (string, Err) {
@@ -140,7 +138,6 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	// handlers turn
 	//log.Printf("Operation applied")
 	m := kv.lastApplyMsg
-	//err := Err("")
 	appliedOp := m.Command.(Op)
 	if !appliedOp.Equals(&op) {
 		log.Printf("[SERVER] %+v does not match %+v", appliedOp, op)
@@ -215,11 +212,11 @@ func (kv *KVServer) executeIfNew(op Op) {
 	if kv.isDuplicate(op) {
 		return
 	}
-	r, e := kv.execute(op)
+	result, err := kv.execute(op)
 	kv.lastRequest[op.ClientId] = Result{
 		requestNumber: op.RequestNumber,
-		result:        r,
-		err:           e,
+		result:        result,
+		err:           err,
 	}
 }
 
@@ -227,16 +224,16 @@ func (kv *KVServer) execute(op Op) (string, Err) {
 	switch op.Type {
 	case GetOp:
 		v, exists := kv.values[op.Args[0]]
-		if !exists {
-			return "", ErrNoKey
+		if exists {
+			return v, ""
 		}
-		return v, OK
+		return "", ErrNoKey
 	case PutOp:
 		kv.values[op.Args[0]] = op.Args[1]
 	case AppendOp:
 		kv.values[op.Args[0]] += op.Args[1]
 	}
-	return "", OK
+	return "", ""
 
 	//log.Printf("[EXECUTE] %v='%v'\n", op.Args[0], kv.values[op.Args[0]])
 }
