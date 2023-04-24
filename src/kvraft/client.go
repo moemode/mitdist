@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"log"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
+	log.Print("NewGet")
 	// You will have to modify this function.
 	rN := ck.reqNum()
 	//log.Printf("[CLERK %v] Get %v", ck.id, key)
@@ -60,8 +62,9 @@ func (ck *Clerk) Get(key string) string {
 			RequestNumber: rN,
 			Key:           key,
 		}, &reply)
+		log.Printf("[CLERK %v] Get key=%v -> %v, err: %v", ck.id, key, reply.Value, reply.Err)
 		if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-			//log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
+			log.Printf("[CLERK %v] Get key=%v -> %v", ck.id, key, reply.Value)
 			return reply.Value
 		}
 		ck.tryNewLeader(lid)
