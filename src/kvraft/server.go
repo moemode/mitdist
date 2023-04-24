@@ -63,12 +63,12 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh         chan int
-	waitingHandlerIndices map[int]Empty
-	lastApplyMsg          raft.ApplyMsg
-	lastApplyMsgChanged   *sync.Cond
-	values                map[string]string
-	lastRequest           map[int64]Result
+	handlerDoneCh       chan int
+	nWaitingHandlers    map[int]int
+	lastApplyMsg        raft.ApplyMsg
+	lastApplyMsgChanged *sync.Cond
+	values              map[string]string
+	lastRequest         map[int64]Result
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -81,9 +81,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		RequestNumber: args.RequestNumber,
 	})
 	if reply.Err != OK {
-		log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
+		//log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
 	}
-	log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
+	//log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
 
 }
 
@@ -115,14 +115,14 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	if !isLeader {
 		return "", ErrWrongLeader
 	}
-	log.Printf("[SERVER] (ID=%v) Start %+v", id, op)
-	_, alreadyWaiting := kv.waitingHandlerIndices[id]
+	//log.Printf("[SERVER] (ID=%v) Start %+v", id, op)
+	alreadyWaiting := kv.nWaitingHandlers[id] != 0
 	if alreadyWaiting {
 		log.Fatalf("Some RPC is already waiting for %v", id)
 	}
-	kv.waitingHandlerIndices[id] = Empty{}
+	kv.nWaitingHandlers[id] += 1
 	defer func() {
-		delete(kv.waitingHandlerIndices, id)
+		kv.nWaitingHandlers[id] -= 1
 		if kv.lastApplyMsg.CommandIndex == id {
 			kv.handlerDoneCh <- id
 		}
@@ -193,22 +193,20 @@ func (kv *KVServer) apply() {
 		kv.mu.Lock()
 		kv.executeIfNew(m.Command.(Op))
 		//log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
-		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
+		nWaiting := kv.nWaitingHandlers[m.CommandIndex]
+		if nWaiting == 0 {
 			kv.mu.Unlock()
 			//log.Println("Continue")
 			continue
 		}
 		kv.lastApplyMsg = m
 		kv.lastApplyMsgChanged.Broadcast()
-		log.Printf("Apply waiting for rpc exit,\n waitingHandlers: %+v\n lastApplyMsg: %+v", kv.waitingHandlerIndices, kv.lastApplyMsg)
+		//log.Printf("Apply waiting for rpc exit,\n waitingHandlers: %+v\n lastApplyMsg: %+v", kv.nWaitingHandlers, kv.lastApplyMsg)
 		kv.mu.Unlock()
-		for {
-			idx := <-kv.handlerDoneCh
-			if idx == m.CommandIndex {
-				break
-			}
+		for i := 0; i < nWaiting; i++ {
+			<-kv.handlerDoneCh
 		}
-		log.Println("Apply detected rpc exit")
+		//log.Println("Apply detected rpc exit")
 	}
 }
 
@@ -267,7 +265,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.waitingHandlerIndices = make(map[int]Empty)
+	kv.nWaitingHandlers = make(map[int]int)
 	kv.handlerDoneCh = make(chan int)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.values = make(map[string]string)
