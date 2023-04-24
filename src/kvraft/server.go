@@ -128,7 +128,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 			kv.handlerDoneCh <- id
 		}
 	}()
-	for kv.rf.IsLeader() && t == kv.rf.Term() && kv.lastApplyMsg.CommandIndex != id {
+	for t == kv.rf.Term() && kv.lastApplyMsg.CommandIndex < id {
 		/*
 			log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
 			log.Printf("Back to sleep %+v", op)
@@ -136,7 +136,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 		*/
 		kv.lastApplyMsgChanged.Wait()
 	}
-	if !kv.rf.IsLeader() || t != kv.rf.Term() {
+	if t != kv.rf.Term() {
 		return "", ErrWrongLeader
 	}
 	// handlers turn
@@ -146,7 +146,6 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	appliedOp := m.Command.(Op)
 	if !appliedOp.Equals(&op) {
 		log.Printf("[SERVER] %+v does not match %+v", appliedOp, op)
-		//err = ErrWrongLeader
 		return "", ErrWrongLeader
 	}
 	//log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, op)
