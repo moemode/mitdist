@@ -80,7 +80,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		RequestNumber: args.RequestNumber,
 	})
 	if reply.Err != "" {
-		log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
+		//log.Printf("[SERVER] GET reply: %v, %v", reply.Err, reply.Value)
 		return
 	}
 	reply.Err = ErrNoKey
@@ -105,36 +105,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) Operation(op Op) (string, Err) {
-	/*
-			if len(submittedOp.Args) < 1 || len(submittedOp.Args) > 2 {
-				log.Fatalf("Submitted op args length bad")
-			}
-			s := "key='" + submittedOp.Args[0] + "'"
-			if len(submittedOp.Args) == 2 {
-				s += " value='" + submittedOp.Args[1] + "'"
-			}
-
-		log.Printf("%+v", kv.lastRequest)
-		lR, ok := kv.lastRequest[submittedOp.ClientId]
-		if ok {
-			if lR.requestNumber > submittedOp.RequestNumber {
-				return "", ErrOldRequest
-			}
-			if lR.requestNumber == submittedOp.RequestNumber {
-				return kv.lastRequest[submittedOp.ClientId].result, ""
-			}
-		}
-		/*
-			if kv.lastRequest[submittedOp.ClientId].requestNumber > submittedOp.RequestNumber {
-				log.Fatalf("1")
-				return "", ErrOldRequest
-			}
-			if kv.lastRequest[submittedOp.ClientId].requestNumber == submittedOp.RequestNumber {
-				log.Fatalf("2")
-				log.Printf("Answered from cache")
-				return kv.lastRequest[submittedOp.ClientId].result, ""
-			}
-	*/
 	if kv.isDuplicate(op) {
 		if r, mostRecent := kv.duplicateResult(op); mostRecent {
 			return r.result, ""
@@ -146,24 +116,27 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	if !isLeader {
 		return "", ErrWrongLeader
 	}
-	//log.Printf("Here")
-
-	log.Printf("[SERVER] (ID=%v) Start %+v", id, op)
+	//log.Printf("[SERVER] (ID=%v) Start %+v", id, op)
 	_, alreadyWaiting := kv.waitingHandlerIndices[id]
 	if alreadyWaiting {
 		log.Fatalf("Some RPC is already waiting for %v", id)
 	}
 	kv.waitingHandlerIndices[id] = Empty{}
-	for kv.rf.IsLeader() && kv.rf.Term() == t && kv.lastApplyMsg.CommandIndex != id {
-		log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
-		log.Printf("Back to sleep %+v", op)
-		log.Printf("%v", kv.lastRequest)
-		kv.lastApplyMsgChanged.Wait()
-	}
-	if !kv.rf.IsLeader() || kv.rf.Term() != t {
+	defer func() {
+		delete(kv.waitingHandlerIndices, id)
 		if kv.lastApplyMsg.CommandIndex == id {
 			kv.handlerDoneCh <- id
 		}
+	}()
+	for kv.rf.IsLeader() && t == kv.rf.Term() && kv.lastApplyMsg.CommandIndex != id {
+		/*
+			log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
+			log.Printf("Back to sleep %+v", op)
+			log.Printf("%v", kv.lastRequest)
+		*/
+		kv.lastApplyMsgChanged.Wait()
+	}
+	if !kv.rf.IsLeader() || t != kv.rf.Term() {
 		return "", ErrWrongLeader
 	}
 	// handlers turn
@@ -173,19 +146,11 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	appliedOp := m.Command.(Op)
 	if !appliedOp.Equals(&op) {
 		log.Printf("[SERVER] %+v does not match %+v", appliedOp, op)
-		if kv.lastApplyMsg.CommandIndex == id {
-			kv.handlerDoneCh <- id
-		}
 		//err = ErrWrongLeader
 		return "", ErrWrongLeader
 	}
-
 	//log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, op)
 	r := kv.lastRequest[op.ClientId]
-
-	kv.handlerDoneCh <- id
-
-	delete(kv.waitingHandlerIndices, id)
 	return r.result, err
 }
 
@@ -228,13 +193,7 @@ func (kv *KVServer) apply() {
 			log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
-		op := m.Command.(Op)
-		if !kv.isDuplicate(op) {
-			kv.lastRequest[op.ClientId] = Result{
-				requestNumber: op.RequestNumber,
-				result:        kv.execute(op),
-			}
-		}
+		kv.executeIfNew(m.Command.(Op))
 		//log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
 		if _, waiting := kv.waitingHandlerIndices[m.CommandIndex]; !waiting {
 			kv.mu.Unlock()
@@ -244,14 +203,24 @@ func (kv *KVServer) apply() {
 		kv.lastApplyMsg = m
 		kv.lastApplyMsgChanged.Broadcast()
 		kv.mu.Unlock()
-		log.Println("Apply waiting for rpc exit")
+		//log.Printf("Apply waiting for rpc exit,\n waitingHandlers: %+v\n lastApplyMsg: %+v", kv.waitingHandlerIndices, kv.lastApplyMsg)
 		for {
 			idx := <-kv.handlerDoneCh
 			if idx == m.CommandIndex {
 				break
 			}
 		}
-		log.Println("Apply detected rpc exit")
+		//log.Println("Apply detected rpc exit")
+	}
+}
+
+func (kv *KVServer) executeIfNew(op Op) {
+	if kv.isDuplicate(op) {
+		return
+	}
+	kv.lastRequest[op.ClientId] = Result{
+		requestNumber: op.RequestNumber,
+		result:        kv.execute(op),
 	}
 }
 
@@ -265,6 +234,7 @@ func (kv *KVServer) execute(op Op) string {
 		kv.values[op.Args[0]] += op.Args[1]
 	}
 	return ""
+
 	//log.Printf("[EXECUTE] %v='%v'\n", op.Args[0], kv.values[op.Args[0]])
 }
 
@@ -302,7 +272,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	go func() {
 		for {
 			kv.lastApplyMsgChanged.Broadcast()
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return kv
