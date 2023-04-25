@@ -203,9 +203,8 @@ func (kv *KVServer) apply() {
 			//log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
-		kv.executeIfNew(m.Command.(Op))
+		kv.executeIfNew(m)
 		kv.lastApplyMsg = m
-		kv.lastExecutedIndex = max(kv.lastApplyMsg.CommandIndex, kv.lastExecutedIndex)
 		//log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
 		nWaiting := kv.nWaitingHandlers[m.CommandIndex]
 		if nWaiting == 0 {
@@ -261,7 +260,8 @@ func (kv *KVServer) setState(snapshot []byte, lastIndex int) {
 	kv.lastSnapshotIndex = lastIndex
 }
 
-func (kv *KVServer) executeIfNew(op Op) {
+func (kv *KVServer) executeIfNew(m raft.ApplyMsg) {
+	op := m.Command.(Op)
 	if kv.isDuplicate(op) {
 		return
 	}
@@ -271,6 +271,7 @@ func (kv *KVServer) executeIfNew(op Op) {
 		Result:        r,
 		Error:         e,
 	}
+	kv.lastExecutedIndex = max(m.CommandIndex, kv.lastExecutedIndex)
 }
 
 func (kv *KVServer) execute(op Op) (string, Err) {
