@@ -205,7 +205,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	if d.Decode(&rf.currentTerm) != nil || d.Decode(&rf.votedFor) != nil || d.Decode(&rf.log) != nil ||
 		d.Decode(&rf.lastIncludedIndex) != nil || d.Decode(&rf.lastIncludedTerm) != nil {
-		log.Fatalf("s")
+		log.Fatalf("Raft cannot be stored from malformed persisted data.")
 	}
 
 }

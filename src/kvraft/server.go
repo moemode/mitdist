@@ -72,38 +72,26 @@ type KVServer struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	reply.Value, reply.Err = kv.Operation(Op{
-		Type:          GetOp,
-		Args:          []string{args.Key},
-		ClientId:      args.ClientId,
-		RequestNumber: args.RequestNumber,
-	})
+	reply.Value, reply.Err = kv.Operation(args.toOperation())
 	if reply.Err != OK {
-		//log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
 	}
 	//log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
 
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	k, v := args.Key, args.Value
-	_, reply.Err = kv.Operation(Op{
-		Type:          args.Op,
-		Args:          []string{k, v},
-		ClientId:      args.ClientId,
-		RequestNumber: args.RequestNumber,
-	})
+	_, reply.Err = kv.Operation(args.toOperation())
 	if reply.Err != OK {
-		//log.Printf("[SERVER] PUT reply: %v", reply.Err)
-		return
+		//log.Printf("[SERVER] GET reply: err: %v, value:%v", reply.Err, reply.Value)
+
 	}
+	//log.Printf("[SERVER] PUT reply: %v", reply.Err)
+
 }
 
 func (kv *KVServer) Operation(op Op) (string, Err) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	if kv.isDuplicate(op) {
 		if r, mostRecent := kv.duplicateResult(op); mostRecent {
 			return r.result, OK
@@ -121,12 +109,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 		log.Fatalf("Some RPC is already waiting for %v", id)
 	}
 	kv.nWaitingHandlers[id] += 1
-	defer func() {
-		kv.nWaitingHandlers[id] -= 1
-		if kv.lastApplyMsg.CommandIndex == id {
-			kv.handlerDoneCh <- id
-		}
-	}()
+	defer kv.cleanupHandler(id)
 	for t == kv.rf.Term() && kv.lastApplyMsg.CommandIndex < id {
 		/*
 			log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
@@ -150,6 +133,13 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	//log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, op)
 	r := kv.lastRequest[op.ClientId]
 	return r.result, r.err
+}
+
+func (kv *KVServer) cleanupHandler(id int) {
+	kv.nWaitingHandlers[id] -= 1
+	if kv.lastApplyMsg.CommandIndex == id {
+		kv.handlerDoneCh <- id
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
