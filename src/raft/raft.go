@@ -222,7 +222,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 	index = index - 1
 	if index <= rf.lastIncludedIndex {
-		log.Printf("[OUTDATED SNAPSHOT] App created snapshot with idx=%v < %v lastIncludedIndex", index, rf.lastIncludedIndex)
+		log.Printf("[OUTDATED SNAPSHOT] App created snapshot with idx=%v <= %v lastIncludedIndex", index, rf.lastIncludedIndex)
 		return
 	}
 	// index > rf.lastIncludedIndex <=> index >= rf.baseIndex
