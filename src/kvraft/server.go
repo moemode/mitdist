@@ -10,6 +10,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"golang.org/x/exp/constraints"
 )
 
 const Debug = false
@@ -38,6 +39,13 @@ type Result struct {
 	Error         Err
 }
 
+func max[T constraints.Ordered](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func testEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -64,13 +72,13 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	handlerDoneCh       chan int
-	nWaitingHandlers    map[int]int
-	lastApplyMsg        raft.ApplyMsg
-	lastApplyMsgChanged *sync.Cond
-	values              map[string]string
-	lastRequest         map[int64]Result
-	lastExecutedIndex   int
+	handlerDoneCh                        chan int
+	nWaitingHandlers                     map[int]int
+	lastApplyMsg                         raft.ApplyMsg
+	lastApplyMsgChanged                  *sync.Cond
+	values                               map[string]string
+	lastRequest                          map[int64]Result
+	lastExecutedIndex, lastSnapshotIndex int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -185,13 +193,15 @@ func (kv *KVServer) apply() {
 			}
 			if m.SnapshotIndex > kv.lastExecutedIndex {
 				log.Printf("set state to snapshot")
-				kv.setState(m.Snapshot)
-				continue
+				kv.setState(m.Snapshot, m.CommandIndex)
 			}
+			continue
 			//log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
 		kv.executeIfNew(m.Command.(Op))
+		kv.lastApplyMsg = m
+		kv.lastExecutedIndex = max(kv.lastApplyMsg.CommandIndex, kv.lastExecutedIndex)
 		//log.Printf("Op ClientId: %v Request#: %v", op.ClientId, op.RequestNumber)
 		nWaiting := kv.nWaitingHandlers[m.CommandIndex]
 		if nWaiting == 0 {
@@ -199,8 +209,7 @@ func (kv *KVServer) apply() {
 			//log.Println("Continue")
 			continue
 		}
-		kv.lastApplyMsg = m
-		kv.lastExecutedIndex = kv.lastApplyMsg.CommandIndex
+
 		kv.lastApplyMsgChanged.Broadcast()
 		//log.Printf("Apply waiting for rpc exit,\n waitingHandlers: %+v\n lastApplyMsg: %+v", kv.nWaitingHandlers, kv.lastApplyMsg)
 		kv.mu.Unlock()
@@ -217,12 +226,13 @@ func (kv *KVServer) initSnapshot() {
 	}
 	for {
 		kv.mu.Lock()
-		if kv.lastExecutedIndex != -1 && float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
-			log.Printf("kv.lastapplymsg: %+v", kv.lastApplyMsg)
-			kv.rf.Snapshot(kv.lastApplyMsg.CommandIndex, kv.state())
+		if kv.lastExecutedIndex != kv.lastSnapshotIndex && float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
+			log.Printf("[SNAPSHOT] kv.lastapplymsg: %+v", kv.lastApplyMsg)
+			log.Printf("lastExecutedIndex %d", kv.lastExecutedIndex)
+			kv.rf.Snapshot(kv.lastExecutedIndex, kv.state())
 		}
 		kv.mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -234,18 +244,21 @@ func (kv *KVServer) state() []byte {
 	return w.Bytes()
 }
 
-func (kv *KVServer) setState(snapshot []byte) {
+func (kv *KVServer) setState(snapshot []byte, lastIndex int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if snapshot == nil || len(snapshot) < 1 { // bootstrap without any state?
 		kv.lastRequest = make(map[int64]Result)
 		kv.values = make(map[string]string)
+		return
 	}
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
 	if d.Decode(&kv.lastRequest) != nil || d.Decode(&kv.values) != nil {
 		log.Fatalf("KVServer cannot be stored from malformed snapshot.")
 	}
+	kv.lastExecutedIndex = lastIndex
+	kv.lastSnapshotIndex = lastIndex
 }
 
 func (kv *KVServer) executeIfNew(op Op) {
@@ -301,8 +314,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	//kv.setState()
 	kv.lastRequest = make(map[int64]Result)
 	kv.values = make(map[string]string)
 	// You may need initialization code here.
@@ -310,6 +321,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.handlerDoneCh = make(chan int)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.lastExecutedIndex = -1
+	kv.lastSnapshotIndex = -1
 
 	go kv.apply()
 	go kv.initSnapshot()
