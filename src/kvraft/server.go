@@ -33,9 +33,9 @@ type Op struct {
 }
 
 type Result struct {
-	requestNumber int64
-	result        string
-	err           Err
+	RequestNumber int64
+	Result        string
+	Error         Err
 }
 
 func testEq(a, b []string) bool {
@@ -70,6 +70,7 @@ type KVServer struct {
 	lastApplyMsgChanged *sync.Cond
 	values              map[string]string
 	lastRequest         map[int64]Result
+	lastExecutedIndex   int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -95,7 +96,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	defer kv.mu.Unlock()
 	if kv.isDuplicate(op) {
 		if r, mostRecent := kv.duplicateResult(op); mostRecent {
-			return r.result, OK
+			return r.Result, OK
 		} else {
 			return "", "Outdated"
 		}
@@ -133,7 +134,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	}
 	//log.Printf("[SERVER] APPLIED (ID=%v) %+v was applied", id, op)
 	r := kv.lastRequest[op.ClientId]
-	return r.result, r.err
+	return r.Result, r.Error
 }
 
 func (kv *KVServer) cleanupHandler(id int) {
@@ -164,12 +165,12 @@ func (kv *KVServer) killed() bool {
 
 func (kv *KVServer) isDuplicate(op Op) bool {
 	r, exists := kv.lastRequest[op.ClientId]
-	return exists && r.requestNumber >= op.RequestNumber
+	return exists && r.RequestNumber >= op.RequestNumber
 }
 
 func (kv *KVServer) duplicateResult(op Op) (Result, bool) {
 	r, exists := kv.lastRequest[op.ClientId]
-	if exists && r.requestNumber == op.RequestNumber {
+	if exists && r.RequestNumber == op.RequestNumber {
 		return r, true
 	}
 	return Result{}, false
@@ -179,7 +180,15 @@ func (kv *KVServer) apply() {
 	for !kv.killed() {
 		m := <-kv.applyCh
 		if !m.CommandValid {
-			log.Fatalf("Non Command Apply Msg Unimplemented")
+			if !m.SnapshotValid {
+				log.Fatalf("ApplyMsg with m.CommandValid==m.SnapshotValid==false")
+			}
+			if m.SnapshotIndex > kv.lastExecutedIndex {
+				log.Printf("set state to snapshot")
+				kv.setState(m.Snapshot)
+				continue
+			}
+			//log.Fatalf("Non Command Apply Msg Unimplemented")
 		}
 		kv.mu.Lock()
 		kv.executeIfNew(m.Command.(Op))
@@ -191,6 +200,7 @@ func (kv *KVServer) apply() {
 			continue
 		}
 		kv.lastApplyMsg = m
+		kv.lastExecutedIndex = kv.lastApplyMsg.CommandIndex
 		kv.lastApplyMsgChanged.Broadcast()
 		//log.Printf("Apply waiting for rpc exit,\n waitingHandlers: %+v\n lastApplyMsg: %+v", kv.nWaitingHandlers, kv.lastApplyMsg)
 		kv.mu.Unlock()
@@ -206,9 +216,12 @@ func (kv *KVServer) initSnapshot() {
 		return
 	}
 	for {
-		if float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
+		kv.mu.Lock()
+		if kv.lastExecutedIndex != -1 && float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
+			log.Printf("kv.lastapplymsg: %+v", kv.lastApplyMsg)
 			kv.rf.Snapshot(kv.lastApplyMsg.CommandIndex, kv.state())
 		}
+		kv.mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -222,6 +235,8 @@ func (kv *KVServer) state() []byte {
 }
 
 func (kv *KVServer) setState(snapshot []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	if snapshot == nil || len(snapshot) < 1 { // bootstrap without any state?
 		kv.lastRequest = make(map[int64]Result)
 		kv.values = make(map[string]string)
@@ -239,9 +254,9 @@ func (kv *KVServer) executeIfNew(op Op) {
 	}
 	r, e := kv.execute(op)
 	kv.lastRequest[op.ClientId] = Result{
-		requestNumber: op.RequestNumber,
-		result:        r,
-		err:           e,
+		RequestNumber: op.RequestNumber,
+		Result:        r,
+		Error:         e,
 	}
 }
 
@@ -287,12 +302,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	//kv.setState()
+	kv.lastRequest = make(map[int64]Result)
+	kv.values = make(map[string]string)
 	// You may need initialization code here.
 	kv.nWaitingHandlers = make(map[int]int)
 	kv.handlerDoneCh = make(chan int)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
+	kv.lastExecutedIndex = -1
 
 	go kv.apply()
+	go kv.initSnapshot()
 	go func() {
 		for {
 			kv.lastApplyMsgChanged.Broadcast()
