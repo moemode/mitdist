@@ -79,6 +79,7 @@ type KVServer struct {
 	values                               map[string]string
 	lastRequest                          map[int64]Result
 	lastExecutedIndex, lastSnapshotIndex int
+	raftT                                int64
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -96,7 +97,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	}
 	//log.Printf("[SERVER] PUT reply: %v", reply.Err)
+}
 
+func (kv *KVServer) raftTerm() int64 {
+	return atomic.LoadInt64(&kv.raftT)
 }
 
 func (kv *KVServer) Operation(op Op) (string, Err) {
@@ -120,7 +124,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 	}
 	kv.nWaitingHandlers[id] += 1
 	defer kv.cleanupHandler(id)
-	for t == kv.rf.Term() && kv.lastApplyMsg.CommandIndex < id {
+	for int64(t) == kv.raftTerm() && kv.lastApplyMsg.CommandIndex < id {
 		/*
 			log.Printf("COmmand index %v, id: %v", kv.lastApplyMsg.CommandIndex, id)
 			log.Printf("Back to sleep %+v", op)
@@ -128,7 +132,7 @@ func (kv *KVServer) Operation(op Op) (string, Err) {
 		*/
 		kv.lastApplyMsgChanged.Wait()
 	}
-	if t != kv.rf.Term() {
+	if int64(t) != kv.raftTerm() {
 		return "", ErrWrongLeader
 	}
 	// handlers turn
@@ -221,15 +225,11 @@ func (kv *KVServer) apply() {
 }
 
 func (kv *KVServer) initSnapshot() {
-	if kv.maxraftstate == -1 {
-		return
-	}
 	for {
 		kv.mu.Lock()
 		if kv.lastExecutedIndex != kv.lastSnapshotIndex && float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
-			log.Printf("[SNAPSHOT] kv.lastapplymsg: %+v", kv.lastApplyMsg)
-			log.Printf("lastExecutedIndex %d", kv.lastExecutedIndex)
 			kv.rf.Snapshot(kv.lastExecutedIndex, kv.state())
+			kv.lastSnapshotIndex = kv.lastExecutedIndex
 		}
 		kv.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
@@ -291,6 +291,18 @@ func (kv *KVServer) execute(op Op) (string, Err) {
 	//log.Printf("[EXECUTE] %v='%v'\n", op.Args[0], kv.values[op.Args[0]])
 }
 
+func (kv *KVServer) refreshRaftTerm() {
+	for {
+		old := atomic.LoadInt64(&kv.raftT)
+		raftTerm := int64(kv.rf.Term())
+		if old != raftTerm {
+			atomic.StoreInt64(&kv.raftT, raftTerm)
+			kv.lastApplyMsgChanged.Broadcast()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
@@ -322,14 +334,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
 	kv.lastExecutedIndex = -1
 	kv.lastSnapshotIndex = -1
-
+	kv.raftT = 0
 	go kv.apply()
-	go kv.initSnapshot()
-	go func() {
-		for {
-			kv.lastApplyMsgChanged.Broadcast()
-			time.Sleep(50 * time.Millisecond)
-		}
-	}()
+	if kv.maxraftstate != -1 {
+		go kv.initSnapshot()
+	}
+	go kv.refreshRaftTerm()
 	return kv
 }
