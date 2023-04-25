@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -200,6 +201,38 @@ func (kv *KVServer) apply() {
 	}
 }
 
+func (kv *KVServer) initSnapshot() {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	for {
+		if float64(kv.rf.Persister.RaftStateSize())/float64(kv.maxraftstate) > 0.8 {
+			kv.rf.Snapshot(kv.lastApplyMsg.CommandIndex, kv.state())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func (kv *KVServer) state() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.lastRequest)
+	e.Encode(kv.values)
+	return w.Bytes()
+}
+
+func (kv *KVServer) setState(snapshot []byte) {
+	if snapshot == nil || len(snapshot) < 1 { // bootstrap without any state?
+		kv.lastRequest = make(map[int64]Result)
+		kv.values = make(map[string]string)
+	}
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&kv.lastRequest) != nil || d.Decode(&kv.values) != nil {
+		log.Fatalf("KVServer cannot be stored from malformed snapshot.")
+	}
+}
+
 func (kv *KVServer) executeIfNew(op Op) {
 	if kv.isDuplicate(op) {
 		return
@@ -258,8 +291,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.nWaitingHandlers = make(map[int]int)
 	kv.handlerDoneCh = make(chan int)
 	kv.lastApplyMsgChanged = sync.NewCond(&kv.mu)
-	kv.values = make(map[string]string)
-	kv.lastRequest = make(map[int64]Result)
+
 	go kv.apply()
 	go func() {
 		for {
