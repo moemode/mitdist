@@ -168,7 +168,6 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 func (rf *Raft) persist() {
-	// Example:
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -240,13 +239,13 @@ func (rf *Raft) trim(index int) {
 	rf.baseIndex = rf.lastIncludedIndex + 1
 }
 
-// example RequestVote RPC arguments structure.
+// RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	Term, CandidateId, LastLogIndex, LastLogTerm int
 }
 
-// example RequestVote RPC reply structure.
+// RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	Term        int
@@ -383,7 +382,7 @@ func (rf *Raft) entryHasTerm(idx, term int) bool {
 	return rf.logEntry(idx).Term == term
 }
 
-// example RequestVote RPC handler.
+// RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -407,7 +406,7 @@ func (rf *Raft) updatedLog(lastTerm, lastIndex int) bool {
 	return (lastTerm > rf.lastLogTerm()) || (lastTerm == rf.lastLogTerm() && lastIndex >= rf.lastLogIndex())
 }
 
-// example code to send a RequestVote RPC to a server.
+// Send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
 // fills in *reply with RPC reply, so caller should
